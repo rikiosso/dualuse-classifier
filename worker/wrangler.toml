@@ -15,8 +15,9 @@ DAILY_BUDGET_USD = "0.30"
 MONTHLY_BUDGET_USD = "10"
 IP_DAILY_CONVERSATIONS = "2"
 MAX_TURNS = "10"
-IP_SALT = "change-me-once-at-deploy"
 LOOP_MODEL = "claude-haiku-4-5"
 VERDICT_MODEL = "claude-sonnet-5"
 
-# Secret (never in this file):  npx wrangler secret put ANTHROPIC_API_KEY
+# Secrets (never in this file):
+#   npx wrangler secret put ANTHROPIC_API_KEY   (a dedicated key with a monthly spend limit)
+#   npx wrangler secret put IP_SALT             (any random string)

@@ -134,6 +134,15 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
   );
   if (!gate.ok) return json({ type: "error", reason: gate.reason }, 429, cors);
 
+  // Reserve a conservative worst-case cost BEFORE the model runs, so the spend
+  // counter reflects this request while it is still in flight — a concurrent
+  // burst sees the reservations rather than a stale zero. (KV is eventually
+  // consistent and non-atomic, so this narrows but cannot fully close the race;
+  // the AUTHORITATIVE hard ceiling is the dedicated API key's monthly spend
+  // limit, enforced server-side by Anthropic. See README.)
+  const RESERVE_USD = 0.15;
+  await recordSpend(env.BUDGET_KV, RESERVE_USD);
+
   try {
     const annex = await deps.annex(env);
     const client = deps.client(env);
@@ -147,7 +156,7 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
       },
       parseInt(env.MAX_TURNS || "10", 10),
     );
-    await recordSpend(env.BUDGET_KV, result.usd);
+    await recordSpend(env.BUDGET_KV, result.usd - RESERVE_USD); // reconcile to actual
     return json(
       {
         type: result.type,
@@ -160,10 +169,14 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
     );
   } catch (err) {
     if (err instanceof InvalidRequest) {
+      // no model ran — refund the reservation
+      await recordSpend(env.BUDGET_KV, -RESERVE_USD);
       const reason =
         err.message === "conversation_too_long" ? "conversation_too_long" : "bad_request";
       return json({ type: "error", reason }, 400, cors);
     }
+    // a model may have run before the throw — KEEP the reservation (never refund
+    // on an upstream error) so mid-loop token burn still counts against the cap
     console.error("turn failed:", err);
     return json({ type: "error", reason: "upstream_error" }, 502, cors);
   }

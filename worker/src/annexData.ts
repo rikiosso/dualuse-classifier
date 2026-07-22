@@ -95,3 +95,20 @@ export function quoteAppearsIn(quote: string, text: string): boolean {
   const q = norm(quote);
   return q.length > 0 && norm(text).includes(q);
 }
+
+// The verbatim text of exactly one provision plus its descendants, addressed by
+// dotted path. Entry text is one line per provision, "<dotted-path> <text>", so
+// the block is the line whose first token === path, plus every line whose token
+// starts with `path.` (children). Returns null if the path is not in the entry.
+// This scopes quote-validation to the CITED sub-item — a comparator or number
+// lifted from a different clause of the same (multi-page) entry no longer passes.
+export function provisionText(entry: AnnexEntry, dottedPath: string): string | null {
+  const path = dottedPath.trim();
+  const lines = entry.verbatim_text.split("\n");
+  const block: string[] = [];
+  for (const line of lines) {
+    const token = line.split(/\s/, 1)[0];
+    if (token === path || token.startsWith(path + ".")) block.push(line);
+  }
+  return block.length ? block.join("\n") : null;
+}

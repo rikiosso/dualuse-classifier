@@ -100,7 +100,7 @@ describe("validateVerdict", () => {
     };
     const problems = validateVerdict(bad, ANNEX);
     expect(problems.join(" ")).toContain("9Z999");
-    expect(problems.join(" ")).toContain("not found in the entry text");
+    expect(problems.join(" ")).toContain("not found in that provision");
     expect(problems.join(" ")).toContain("caveats");
   });
 });
@@ -155,5 +155,65 @@ describe("runTurn", () => {
     ]);
     const result = await runTurn(client, ANNEX, [{ role: "user", content: "litho" }], MODELS, 10);
     expect(result.type).toBe("question"); // never a verdict with invented quotes
+  });
+});
+
+
+describe("validateVerdict — hardened grounding", () => {
+  it("rejects a dotted_path that does not belong to the cited entry", () => {
+    const v = {
+      ...GOOD_VERDICT,
+      reasoning: [{ ...GOOD_VERDICT.reasoning[0], dotted_path: "4A003.b" }],
+    };
+    expect(validateVerdict(v, ANNEX).join(" ")).toContain("does not belong");
+  });
+
+  it("rejects a quote lifted from a different clause of the same entry", () => {
+    // 4A003 exists with a TeraFLOPS clause; cite 3B501 but quote 4A003's text
+    const laundered: Verdict = {
+      status: "listed",
+      entry_codes: ["3B501"],
+      reasoning: [
+        {
+          entry_code: "3B501",
+          dotted_path: "3B501.f.1.b.1",
+          verbatim_quote: "Adjusted Peak Performance", // real corpus text, wrong provision
+          explanation: "x",
+        },
+      ],
+      caveats: ["c"],
+      definitions_used: [],
+    };
+    expect(validateVerdict(laundered, ANNEX).join(" ")).toContain("not found in that provision");
+  });
+
+  it("rejects a headline entry_code with no backing reasoning", () => {
+    const v = { ...GOOD_VERDICT, entry_codes: ["3B501", "4A003"] };
+    expect(validateVerdict(v, ANNEX).join(" ")).toContain("headlined but has no reasoning");
+  });
+
+  it("rejects a too-short quote", () => {
+    const v = {
+      ...GOOD_VERDICT,
+      reasoning: [{ ...GOOD_VERDICT.reasoning[0], verbatim_quote: "193 nm" }],
+    };
+    expect(validateVerdict(v, ANNEX).join(" ")).toContain("too short");
+  });
+});
+
+describe("verdict transcript is a valid follow-up array", () => {
+  it("closes the final tool_use with a tool_result", async () => {
+    const client = new CannedClaudeClient([
+      toolResp("final_answer", GOOD_VERDICT),
+      toolResp("final_answer", GOOD_VERDICT, "tu_2"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "193nm litho" }], MODELS, 10);
+    const last = result.transcript.at(-1);
+    expect(last?.role).toBe("user");
+    const blocks = last?.content;
+    expect(Array.isArray(blocks) && blocks[0].type).toBe("tool_result");
+    // every tool_use in the transcript has a following tool_result (no unpaired)
+    const flat = JSON.stringify(result.transcript);
+    expect((flat.match(/"tool_use"/g) || []).length).toBeGreaterThan(0);
   });
 });

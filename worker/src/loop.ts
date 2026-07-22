@@ -7,15 +7,21 @@
 // by code, not prompt).
 
 import type { AnnexDataset } from "./annexData";
-import { definitionsFor, entryByCode, quoteAppearsIn } from "./annexData";
+import { definitionsFor, entryByCode, provisionText, quoteAppearsIn } from "./annexData";
 import type { ClaudeClient, ClaudeResponse } from "./claudeClient";
 import { buildSystemBlocks, promptSha256 } from "./prompt";
 import { FINAL_ANSWER_TOOL, LOOKUP_DEFINITIONS_TOOL, LOOKUP_ENTRIES_TOOL, Verdict } from "./tools";
 import { estimateUsd } from "./rateLimit";
 
-const MAX_TOOL_ITERATIONS = 4;
-const LOOP_MAX_TOKENS = 2000;
-const VERDICT_MAX_TOKENS = 8000;
+const MAX_TOOL_ITERATIONS = 3;
+const LOOP_MAX_TOKENS = 1200;
+const VERDICT_MAX_TOKENS = 2500;
+// Quotes shorter than this are too weak to anchor — a 3-char fragment appears
+// everywhere. Real thresholds and provisions comfortably clear it.
+const MIN_QUOTE_CHARS = 12;
+// Hard cap on client-supplied history, so a single POST's token cost is bounded
+// well under the daily budget (was 200k — a ~50k-token inflation vector).
+const MAX_HISTORY_CHARS = 24_000;
 
 export interface Models {
   loop: string;
@@ -39,7 +45,9 @@ export class InvalidRequest extends Error {}
 // unknown roles, unknown block types, oversized histories.
 export function sanitizeMessages(raw: unknown, maxUserTurns: number): Msg[] {
   if (!Array.isArray(raw) || raw.length === 0) throw new InvalidRequest("messages required");
-  if (JSON.stringify(raw).length > 200_000) throw new InvalidRequest("conversation too large");
+  if (JSON.stringify(raw).length > MAX_HISTORY_CHARS) {
+    throw new InvalidRequest("conversation_too_long");
+  }
   const allowedBlocks = new Set(["text", "tool_use", "tool_result"]);
   const out: Msg[] = [];
   let userTurns = 0;
@@ -110,20 +118,48 @@ function execLookup(annex: AnnexDataset, name: string, input: Record<string, unk
 export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
   const problems: string[] = [];
   if (v.caveats.length === 0) problems.push("caveats must not be empty");
+
+  const reasoningCodes = new Set(v.reasoning.map((r) => (r.entry_code || "").toUpperCase()));
   if (v.status === "listed") {
     if (v.entry_codes.length === 0) problems.push("listed verdict needs entry_codes");
     if (v.reasoning.length === 0) problems.push("listed verdict needs reasoning");
+    // every headline code must be backed by a reasoning item, and vice versa —
+    // the UI headlines entry_codes, so an unbacked code is an unsupported claim
+    for (const code of v.entry_codes) {
+      if (!reasoningCodes.has(code.toUpperCase())) {
+        problems.push(`entry_code ${code} is headlined but has no reasoning with a verbatim quote`);
+      }
+    }
   }
   for (const code of v.entry_codes) {
     if (!entryByCode(annex, code)) problems.push(`entry_code ${code} does not exist in the corpus`);
+  }
+  for (const code of reasoningCodes) {
+    if (v.status === "listed" && !v.entry_codes.map((c) => c.toUpperCase()).includes(code)) {
+      problems.push(`reasoning cites ${code} which is not in entry_codes`);
+    }
   }
   for (const r of v.reasoning) {
     const entry = entryByCode(annex, r.entry_code);
     if (!entry) {
       problems.push(`reasoning cites nonexistent entry ${r.entry_code}`);
-    } else if (!quoteAppearsIn(r.verbatim_quote, entry.verbatim_text)) {
+      continue;
+    }
+    // the pinpoint path must belong to the cited entry
+    const path = (r.dotted_path || "").trim();
+    if (!path.toUpperCase().startsWith(r.entry_code.toUpperCase())) {
+      problems.push(`dotted_path ${path} does not belong to entry ${r.entry_code}`);
+      continue;
+    }
+    // the quote must appear in the SPECIFIC provision named by dotted_path — not
+    // merely somewhere in the multi-page entry (blocks comparator/number flips
+    // laundered from a sibling clause)
+    const scope = provisionText(entry, path) ?? entry.verbatim_text;
+    if (r.verbatim_quote.replace(/\s+/g, " ").trim().length < MIN_QUOTE_CHARS) {
+      problems.push(`verbatim_quote for ${path} is too short to anchor a citation`);
+    } else if (!quoteAppearsIn(r.verbatim_quote, scope)) {
       problems.push(
-        `verbatim_quote for ${r.entry_code} not found in the entry text — quotes must be copied exactly from lookup_entries output`,
+        `verbatim_quote for ${path} is not found in that provision's text — quotes must be copied exactly from lookup_entries output for the cited sub-item`,
       );
     }
   }
@@ -190,6 +226,12 @@ export async function runTurn(
         const problems = validateVerdict(verdict, annex);
         transcript.push({ role: "assistant", content: vResp.content as Block[] });
         if (problems.length === 0) {
+          // close the tool_use so the returned transcript is a valid Anthropic
+          // array — a follow-up turn would otherwise 400 on an unpaired tool_use
+          transcript.push({
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: vUse.id, content: "Verdict recorded." }],
+          });
           return {
             type: "verdict",
             text: textOf(vResp),

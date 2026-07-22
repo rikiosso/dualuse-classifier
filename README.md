@@ -6,7 +6,7 @@
 An open-source, interview-style classification assistant for EU export controls. You describe
 what you build; it asks you **one targeted technical question at a time** (wavelengths,
 Adjusted Peak Performance, materials, accuracies…), pulls the exact control text, and
-concludes with a verdict that **quotes the regulation verbatim, with dotted-path citations**
+concludes with a verdict whose every quote is **checked verbatim against the cited provision**, with dotted-path citations
 (`3B001.f.1.b.1 …`) — or tells you honestly that the item is not listed, or that you need a
 human expert.
 
@@ -47,41 +47,57 @@ flowchart LR
    sufficient, the **final verdict is written by a stronger model (Sonnet 5)** under a strict
    JSON schema.
 5. **The server validates every verdict against the corpus before you see it**: every cited
-   entry code must exist, and every "verbatim quote" must actually appear in the entry text.
-   A verdict citing invented text is rejected by code — the assistant has to keep asking
-   questions instead. No unverifiable classification ever ships.
+   entry code must exist, every dotted path must belong to its entry, and every "verbatim
+   quote" must actually appear **in the specific provision named by that dotted path** — not
+   merely somewhere in the multi-page entry, which blocks a threshold or comparator lifted from
+   a neighbouring clause. Headlined codes must be backed by reasoning. A verdict that fails any
+   of these is rejected by code and the assistant keeps asking questions instead. No
+   unverifiable classification ever ships.
 
 ## Cost design (why a public LLM demo doesn't bankrupt anyone)
 
-This runs on a hard budget by construction, not by hope:
+Two layers, doing different jobs:
 
-- per-visitor cap (2 AI conversations/day) — fairness;
-- global caps — **$0.30/day and $10/month absolute**, enforced in the Worker (Workers KV)
-  *and* as a spend limit on the dedicated API key;
-- when the daily budget is spent, the page switches to **Browse mode** — a fully client-side
+- **The hard ceiling is the dedicated API key's monthly spend limit**, set in the Anthropic
+  console (required — see below). Anthropic enforces it server-side and atomically, so total
+  spend cannot exceed it no matter what a burst of traffic does. This is the guarantee.
+- **In-app throttles keep normal usage far below that ceiling**: a per-visitor cap (2 AI
+  conversations/day, fairness), global day/month spend counters in Workers KV, a tight per-turn
+  token bound, and a conservative reserve-before-spend so in-flight requests still count. These
+  are best-effort (Workers KV is eventually consistent, not a lock), which is exactly why the
+  key-level limit above is the real backstop, not these counters.
+- When the day's budget is spent, the page switches to **Browse mode** — a fully client-side
   search of the same Annex I dataset that costs nothing and never goes down.
 
-Prompt caching keeps a full conversation at roughly $0.09.
+Prompt caching keeps a full conversation at roughly $0.09, so a $10/month key limit serves on
+the order of 100 full AI conversations a month; everyone beyond that gets Browse mode.
+(For a strictly atomic in-app counter, swap the KV counters for a Cloudflare Durable Object —
+noted as a follow-up; the key-level limit already makes the ceiling hard today.)
 
 ## Run your own
 
 ```bash
 cd worker
 npm install
-npm test                                  # 12 offline tests, no API key needed
-npx wrangler kv namespace create BUDGET_KV   # paste the id into wrangler.toml
-npx wrangler secret put ANTHROPIC_API_KEY
+npm test                                       # offline test suite, no API key needed
+npx wrangler kv namespace create BUDGET_KV     # paste the id into wrangler.toml
+npx wrangler secret put ANTHROPIC_API_KEY      # a DEDICATED key (see below)
+npx wrangler secret put IP_SALT                # any random string (pseudonymises IPs)
 npx wrangler deploy
 # then put your workers.dev URL into docs/config.js — GitHub Pages serves docs/ as-is
 ```
 
-`docs/` is plain HTML/JS — GitHub Pages serves it as-is (Settings → Pages → main /docs). The Worker is the only backend, and
-the only secret is your Anthropic API key (use a dedicated key with a monthly spend limit).
+**Required for the cost guarantee:** create a *dedicated* Anthropic API key for this Worker and
+set a monthly spend limit on it in the Anthropic console (e.g. $10). That server-side limit is
+the hard ceiling; the in-app KV counters are only the polite throttle beneath it.
+
+`docs/` is plain HTML/JS — GitHub Pages serves it as-is (Settings → Pages → main /docs). The
+Worker is the only backend.
 
 ## Honesty guarantees, in code
 
-- Verbatim-or-nothing: quotes are validated against the corpus server-side
-  ([worker/src/loop.ts](worker/src/loop.ts), `validateVerdict`).
+- Verbatim-or-nothing: every quote is validated against the exact cited provision server-side
+  ([worker/src/loop.ts](worker/src/loop.ts), `validateVerdict`), fail-closed.
 - Every verdict carries the `corpus_version` it was made against and the sha256 of the
   system prompt (provenance).
 - The disclaimer is appended by the Worker, not the model — it cannot be talked out of it.
@@ -95,6 +111,6 @@ Union is authentic. Code: MIT.
 
 ---
 
-Built by [Ricardo Álvarez-Ossorio Castro](https://www.linkedin.com/) — export-controls and
-tech lawyer. Part of a series: [Export Controls Watch](https://rikiosso.github.io/exports-watch/)
+Built by Ricardo Álvarez-Ossorio Castro — export-controls and tech lawyer
+(add your LinkedIn profile URL here). Part of a series: [Export Controls Watch](https://rikiosso.github.io/exports-watch/)
 (autonomous monitoring) → this classifier (interactive triage).
