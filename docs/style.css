@@ -51,3 +51,14 @@ mark { background: #ffd54a66; color: inherit; }
 footer { border-top: 1px solid #8884; margin-top: 2rem; padding-top: .75rem; color: var(--muted);
          font-size: .82rem; }
 footer a { color: inherit; }
+
+#status-line { min-height: 1.2em; }
+#examples { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin-bottom: .75rem; }
+.chip { border: 1px solid #8886; border-radius: 999px; background: none; padding: .3rem .8rem;
+        font-size: .85rem; cursor: pointer; text-align: left; }
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+.verdict .copy { margin-top: .6rem; padding: .35rem .9rem; border: 1px solid var(--accent);
+                 border-radius: 6px; background: none; color: var(--accent); cursor: pointer;
+                 font-size: .85rem; }
+.verdict .copy:hover { background: var(--accent); color: #fff; }
+.entry .param { display: inline; }

@@ -29,7 +29,7 @@ export interface TurnResult {
   type: "question" | "verdict";
   text: string;
   transcript: Msg[];
-  verdict?: Verdict & { corpus_version: string; prompt_sha256: string };
+  verdict?: Verdict & { corpus_version: string; corpus_sha256: string; prompt_sha256: string };
   usd: number;
 }
 
@@ -197,6 +197,7 @@ export async function runTurn(
             verdict: {
               ...verdict,
               corpus_version: annex.corpus_version,
+              corpus_sha256: annex.sha256,
               prompt_sha256: await promptSha256(),
             },
             usd,

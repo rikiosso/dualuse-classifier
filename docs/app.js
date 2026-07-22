@@ -1,13 +1,14 @@
 // EU Dual-Use Classifier — vanilla JS, no dependencies.
-// Security note: model/dataset text is ALWAYS rendered via textContent, never
-// innerHTML — nothing the model (or a prompt-injecting user) says can become
-// markup in someone's browser.
+// Security note: model/dataset text is ALWAYS rendered via textContent /
+// createTextNode, never innerHTML — nothing the model (or a prompt-injecting
+// user) says can become markup in someone's browser.
 
 (function () {
   "use strict";
 
   const cfg = window.CLASSIFIER_CONFIG || {};
   const $ = (id) => document.getElementById(id);
+  const workerReady = cfg.WORKER_URL && !cfg.WORKER_URL.startsWith("REPLACE");
 
   // ---------- tabs ----------
   const panels = { chat: $("panel-chat"), browse: $("panel-browse") };
@@ -22,6 +23,34 @@
   tabs.chat.addEventListener("click", () => showTab("chat"));
   tabs.browse.addEventListener("click", () => showTab("browse"));
 
+  // ---------- health / status line ----------
+  const statusEl = $("status-line");
+  async function refreshStatus() {
+    if (!workerReady) {
+      statusEl.textContent = "Assistant backend not deployed yet — Browse mode is fully available.";
+      return;
+    }
+    try {
+      const resp = await fetch(cfg.WORKER_URL.replace(/\/$/, "") + "/api/health");
+      const h = await resp.json();
+      const corpus = h.corpus
+        ? "corpus " + h.corpus.corpus_version + (h.corpus.valid_from ? " · in force since " + h.corpus.valid_from : "")
+        : "";
+      if (h.assistant_available) {
+        statusEl.textContent = "● Assistant online · " + corpus;
+      } else {
+        statusEl.textContent = "○ Assistant resting (daily demo budget spent) · " + corpus;
+        showBudgetBanner(
+          "The AI assistant has used up today's demo budget — Browse mode below works fully; the assistant is back tomorrow.",
+          false,
+        );
+      }
+    } catch {
+      statusEl.textContent = "";
+    }
+  }
+  refreshStatus();
+
   // ---------- chat ----------
   let transcript = []; // opaque server-owned history, re-sent verbatim
   const messagesEl = $("messages");
@@ -29,6 +58,14 @@
   const input = $("chat-input");
   const sendBtn = $("send");
   const banner = $("budget-banner");
+  const examplesEl = $("examples");
+
+  for (const chip of examplesEl.querySelectorAll(".chip")) {
+    chip.addEventListener("click", () => {
+      input.value = chip.textContent;
+      input.focus();
+    });
+  }
 
   function addBubble(cls, text) {
     const div = document.createElement("div");
@@ -37,6 +74,22 @@
     messagesEl.appendChild(div);
     div.scrollIntoView({ behavior: "smooth", block: "end" });
     return div;
+  }
+
+  function verdictAsText(v) {
+    const label = { listed: "LISTED IN ANNEX I", not_listed: "NOT LISTED IN ANNEX I", needs_expert: "NEEDS EXPERT REVIEW" };
+    const lines = [
+      "EU Dual-Use Classifier — indicative triage (not legal advice)",
+      "Result: " + (label[v.status] || v.status) + (v.entry_codes.length ? " — " + v.entry_codes.join(", ") : ""),
+    ];
+    for (const r of v.reasoning || []) {
+      lines.push("- " + r.dotted_path + ': "' + r.verbatim_quote + '" — ' + r.explanation);
+    }
+    for (const c of v.caveats || []) lines.push("Caveat: " + c);
+    if (v.disclaimer) lines.push(v.disclaimer);
+    lines.push("Corpus version: " + v.corpus_version + (v.corpus_sha256 ? " (sha256 " + v.corpus_sha256.slice(0, 12) + ")" : ""));
+    lines.push("Generated at " + new Date().toISOString() + " — https://rikiosso.github.io/dualuse-classifier/");
+    return lines.join("\n");
   }
 
   function addVerdictCard(v) {
@@ -63,9 +116,16 @@
 
     for (const r of v.reasoning || []) {
       const q = document.createElement("blockquote");
-      const path = document.createElement("span");
+      const path = document.createElement("a");
       path.className = "code";
       path.textContent = r.dotted_path + ": ";
+      const entryCode = (r.entry_code || "").toUpperCase();
+      path.href = "#" + entryCode;
+      path.title = "Open " + entryCode + " in Browse mode";
+      path.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        openEntryInBrowse(entryCode);
+      });
       q.appendChild(path);
       q.appendChild(document.createTextNode('"' + r.verbatim_quote + '"'));
       const expl = document.createElement("div");
@@ -82,6 +142,21 @@
     cav.textContent = parts.join(" · ");
     card.appendChild(cav);
 
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "copy";
+    copyBtn.type = "button";
+    copyBtn.textContent = "Copy result";
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(verdictAsText(v));
+        copyBtn.textContent = "Copied ✓";
+        setTimeout(() => (copyBtn.textContent = "Copy result"), 1500);
+      } catch {
+        copyBtn.textContent = "Copy failed";
+      }
+    });
+    card.appendChild(copyBtn);
+
     messagesEl.appendChild(card);
     card.scrollIntoView({ behavior: "smooth", block: "end" });
   }
@@ -96,13 +171,14 @@
     ev.preventDefault();
     const text = input.value.trim();
     if (!text) return;
-    if (!cfg.WORKER_URL || cfg.WORKER_URL.startsWith("REPLACE")) {
+    if (!workerReady) {
       showBudgetBanner("The assistant backend is not deployed yet — Browse mode works fully.", true);
       return;
     }
     addBubble("user", text);
     transcript = transcript.concat([{ role: "user", content: text }]);
     input.value = "";
+    examplesEl.classList.add("hidden");
     sendBtn.disabled = true;
     const thinking = addBubble("thinking", "Consulting Annex I…");
     try {
@@ -150,7 +226,7 @@
   const metaEl = $("browse-meta");
 
   async function ensureAnnexLoaded() {
-    if (annex) return;
+    if (annex) return annex;
     metaEl.textContent = "Loading Annex I dataset…";
     try {
       const resp = await fetch(cfg.ANNEX_URL);
@@ -158,10 +234,56 @@
       metaEl.textContent =
         annex.entry_count + " entries · consolidated version " + annex.corpus_version +
         (annex.valid_from ? " · in force since " + annex.valid_from : "");
-      renderBrowse("");
+      renderBrowse(searchEl.value || "");
     } catch {
       metaEl.textContent = "Could not load the dataset — please retry.";
     }
+    return annex;
+  }
+
+  // append `text` to `parent`, wrapping case-insensitive matches of q in <mark>
+  function appendHighlighted(parent, text, q) {
+    if (!q) {
+      parent.appendChild(document.createTextNode(text));
+      return;
+    }
+    const lower = text.toLowerCase();
+    let pos = 0;
+    for (;;) {
+      const hit = lower.indexOf(q, pos);
+      if (hit === -1) break;
+      parent.appendChild(document.createTextNode(text.slice(pos, hit)));
+      const mark = document.createElement("mark");
+      mark.textContent = text.slice(hit, hit + q.length);
+      parent.appendChild(mark);
+      pos = hit + q.length;
+    }
+    parent.appendChild(document.createTextNode(text.slice(pos)));
+  }
+
+  function entryDetails(e, q, open) {
+    const det = document.createElement("details");
+    det.className = "entry";
+    det.id = "entry-" + e.entry_code;
+    if (open) det.open = true;
+    const sum = document.createElement("summary");
+    const firstLine = e.verbatim_text.split("\n", 1)[0];
+    appendHighlighted(sum, firstLine.length > 120 ? firstLine.slice(0, 117) + "…" : firstLine, q);
+    det.appendChild(sum);
+    const pre = document.createElement("pre");
+    const paramSet = new Set(e.parameters || []);
+    for (const line of e.verbatim_text.split("\n")) {
+      const span = document.createElement("span");
+      if (paramSet.has(line)) span.className = "param"; // threshold lines highlighted
+      appendHighlighted(span, line, q);
+      pre.appendChild(span);
+      pre.appendChild(document.createTextNode("\n"));
+    }
+    det.appendChild(pre);
+    det.addEventListener("toggle", () => {
+      if (det.open) history.replaceState(null, "", "#" + e.entry_code);
+    });
+    return det;
   }
 
   function renderBrowse(query) {
@@ -172,18 +294,7 @@
       (e) => !q || e.entry_code.toLowerCase().includes(q) || e.verbatim_text.toLowerCase().includes(q),
     );
     const shown = hits.slice(0, 60);
-    for (const e of shown) {
-      const det = document.createElement("details");
-      det.className = "entry";
-      const sum = document.createElement("summary");
-      const firstLine = e.verbatim_text.split("\n", 1)[0];
-      sum.textContent = firstLine.length > 120 ? firstLine.slice(0, 117) + "…" : firstLine;
-      det.appendChild(sum);
-      const pre = document.createElement("pre");
-      pre.textContent = e.verbatim_text;
-      det.appendChild(pre);
-      resultsEl.appendChild(det);
-    }
+    for (const e of shown) resultsEl.appendChild(entryDetails(e, q, false));
     if (hits.length > shown.length) {
       const more = document.createElement("p");
       more.className = "meta";
@@ -198,9 +309,28 @@
     }
   }
 
+  async function openEntryInBrowse(code) {
+    showTab("browse");
+    const data = await ensureAnnexLoaded();
+    if (!data) return;
+    searchEl.value = code;
+    resultsEl.textContent = "";
+    const entry = data.entries.find((e) => e.entry_code === code);
+    if (entry) {
+      resultsEl.appendChild(entryDetails(entry, "", true));
+      history.replaceState(null, "", "#" + code);
+    } else {
+      renderBrowse(code);
+    }
+  }
+
   let debounce = null;
   searchEl.addEventListener("input", () => {
     clearTimeout(debounce);
     debounce = setTimeout(() => renderBrowse(searchEl.value), 150);
   });
+
+  // permalink: #3A001 opens that entry directly in Browse mode
+  const hashCode = decodeURIComponent(location.hash.replace("#", "")).toUpperCase();
+  if (/^\d[A-E]\d{3}$/.test(hashCode)) openEntryInBrowse(hashCode);
 })();

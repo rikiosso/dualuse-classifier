@@ -4,6 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EU Dual-Use Classifier</title>
+<meta name="description" content="Describe a technology and get a guided, cited triage against Annex I of EU dual-use Regulation 2021/821 — always the latest consolidated version, every quote verbatim.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="EU Dual-Use Classifier">
+<meta property="og:description" content="Describe a technology → guided classification against Annex I of Regulation (EU) 2021/821, latest consolidated version, with verbatim citations. Open source; dataset auto-updated every 6h.">
+<meta property="og:url" content="https://rikiosso.github.io/dualuse-classifier/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="EU Dual-Use Classifier">
+<meta name="twitter:description" content="Guided, cited triage against the EU dual-use control list — open source, always current.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧭</text></svg>">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -18,21 +27,29 @@
     <button id="tab-chat" class="tab active">Assistant</button>
     <button id="tab-browse" class="tab">Browse Annex I</button>
   </nav>
+  <p id="status-line" class="meta"></p>
 </header>
 
 <main>
   <section id="panel-chat">
     <div id="messages" aria-live="polite"></div>
     <div id="budget-banner" class="banner hidden"></div>
+    <div id="examples">
+      <span class="meta">Try:</span>
+      <button class="chip" type="button">A photolithography stepper with a 193 nm ArF light source for 300 mm wafers</button>
+      <button class="chip" type="button">A GPU server cluster for training large AI models</button>
+      <button class="chip" type="button">A consumer drone with a 40 km control link and 8 kg payload</button>
+      <button class="chip" type="button">Standard e-commerce web software with TLS encryption</button>
+    </div>
     <form id="chat-form">
       <textarea id="chat-input" rows="3" required
-        placeholder="Describe the technology — e.g. 'A photolithography stepper with a 193 nm ArF light source for 300 mm wafers'"></textarea>
+        placeholder="Describe the technology — components, performance figures, materials, intended use…"></textarea>
       <button id="send" type="submit">Send</button>
     </form>
   </section>
 
   <section id="panel-browse" class="hidden">
-    <input id="search" type="search" placeholder="Search the 384 entries — e.g. wavelength, TeraFLOPS, drone, encryption…">
+    <input id="search" type="search" placeholder="Search the 384 entries — e.g. 3A001, wavelength, TeraFLOPS, drone, encryption…">
     <div id="browse-meta" class="meta"></div>
     <div id="browse-results"></div>
   </section>
