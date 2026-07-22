@@ -1,0 +1,22 @@
+name = "dualuse-classifier"
+main = "src/index.ts"
+compatibility_date = "2026-07-01"
+
+# Create the namespace once with:  npx wrangler kv namespace create BUDGET_KV
+# then paste the returned id below.
+kv_namespaces = [
+  { binding = "BUDGET_KV", id = "REPLACE_WITH_KV_NAMESPACE_ID" }
+]
+
+[vars]
+ALLOWED_ORIGINS = "https://rikiosso.github.io"
+ANNEX_URL = "https://rikiosso.github.io/exports-watch/data/annex.json"
+DAILY_BUDGET_USD = "0.30"
+MONTHLY_BUDGET_USD = "10"
+IP_DAILY_CONVERSATIONS = "2"
+MAX_TURNS = "10"
+IP_SALT = "change-me-once-at-deploy"
+LOOP_MODEL = "claude-haiku-4-5"
+VERDICT_MODEL = "claude-sonnet-5"
+
+# Secret (never in this file):  npx wrangler secret put ANTHROPIC_API_KEY

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EU Dual-Use Classifier</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>EU Dual-Use Classifier</h1>
+  <p class="tagline">Describe a technology — get a guided, cited triage against Annex I of
+  Regulation (EU) 2021/821, always in its latest consolidated version.</p>
+  <p class="disclaimer">⚠️ Indicative automated triage — <strong>not legal advice</strong>.
+  Catch-all controls (Articles 4 and 5) may apply regardless of listing. A licensing
+  authority or qualified counsel has the final word.</p>
+  <nav>
+    <button id="tab-chat" class="tab active">Assistant</button>
+    <button id="tab-browse" class="tab">Browse Annex I</button>
+  </nav>
+</header>
+
+<main>
+  <section id="panel-chat">
+    <div id="messages" aria-live="polite"></div>
+    <div id="budget-banner" class="banner hidden"></div>
+    <form id="chat-form">
+      <textarea id="chat-input" rows="3" required
+        placeholder="Describe the technology — e.g. 'A photolithography stepper with a 193 nm ArF light source for 300 mm wafers'"></textarea>
+      <button id="send" type="submit">Send</button>
+    </form>
+  </section>
+
+  <section id="panel-browse" class="hidden">
+    <input id="search" type="search" placeholder="Search the 384 entries — e.g. wavelength, TeraFLOPS, drone, encryption…">
+    <div id="browse-meta" class="meta"></div>
+    <div id="browse-results"></div>
+  </section>
+</main>
+
+<footer>
+  <p>Open source (<a href="https://github.com/rikiosso/dualuse-classifier">GitHub</a>) ·
+  dataset auto-updated by <a href="https://rikiosso.github.io/exports-watch/">Export Controls Watch</a> ·
+  Annex I text © European Union, <a href="https://eur-lex.europa.eu/">EUR-Lex</a>
+  (reuse per Decision 2011/833/EU); only the Official Journal is authentic.</p>
+</footer>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
