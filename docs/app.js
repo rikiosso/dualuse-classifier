@@ -89,8 +89,24 @@
   function addBubble(cls, text) {
     const div = document.createElement("div");
     div.className = "msg " + cls;
-    if (cls === "assistant") renderInline(div, text);
-    else div.textContent = text;
+    if (cls === "assistant") {
+      // heading/quote markers render as emphasis, never as raw # or >
+      const lines = String(text).split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        let line = lines[i];
+        const heading = /^#{1,6}\s+(.*)$/.exec(line);
+        if (heading) {
+          const b = document.createElement("strong");
+          renderInline(b, heading[1].replace(/\*\*/g, ""));
+          div.appendChild(b);
+        } else {
+          renderInline(div, line.replace(/^>\s?/, ""));
+        }
+        if (i < lines.length - 1) div.appendChild(document.createTextNode("\n"));
+      }
+    } else {
+      div.textContent = text;
+    }
     messagesEl.appendChild(div);
     div.scrollIntoView({ behavior: "smooth", block: "end" });
     return div;

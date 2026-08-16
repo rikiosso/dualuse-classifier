@@ -76,9 +76,12 @@ export function sanitizeMessages(raw: unknown, maxUserTurns: number): Msg[] {
   return out;
 }
 
-function withCache(blocks: Block[] | string): Block[] {
+function withCache(blocks: Block[] | string, ttl?: "1h"): Block[] {
   const arr = typeof blocks === "string" ? [{ type: "text", text: blocks } as Block] : [...blocks];
-  if (arr.length > 0) arr[arr.length - 1] = { ...arr[arr.length - 1], cache_control: { type: "ephemeral" } };
+  if (arr.length > 0) {
+    const cc = ttl ? { type: "ephemeral", ttl } : { type: "ephemeral" };
+    arr[arr.length - 1] = { ...arr[arr.length - 1], cache_control: cc };
+  }
   return arr;
 }
 
@@ -175,7 +178,10 @@ export async function runTurn(
 ): Promise<TurnResult> {
   const transcript = sanitizeMessages(incoming, maxUserTurns);
   const systemBlocks = buildSystemBlocks(annex);
-  const system = withCache(systemBlocks as Block[]);
+  // 1h TTL: humans answer interview questions slower than the default 5-minute
+  // cache — without this, every turn re-writes the ~30k-token prefix at 1.25x
+  // and a single slow conversation costs ~3x more than it should
+  const system = withCache(systemBlocks as Block[], "1h");
   const tools = [LOOKUP_ENTRIES_TOOL, LOOKUP_DEFINITIONS_TOOL, FINAL_ANSWER_TOOL];
   let usd = 0;
 
@@ -195,29 +201,10 @@ export async function runTurn(
     return resp;
   };
 
-  for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-    const resp = await call(models.loop, LOOP_MAX_TOKENS, false);
-    const uses = toolUses(resp);
-    const finalCall = uses.find((u) => u.name === "final_answer");
-
-    if (finalCall) {
-      // The loop model decided to conclude. Hand the verdict itself to the
-      // stronger model under a forced strict schema, with one retry on
-      // validation failure.
-      transcript.push({ role: "assistant", content: resp.content as Block[] });
-      transcript.push({
-        role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: finalCall.id,
-            content:
-              "Draft framework received. Now produce the authoritative final verdict by " +
-              "calling final_answer with complete reasoning, exact verbatim quotes and " +
-              "full caveats.",
-          },
-        ],
-      });
+  // The verdict stage: forced strict final_answer on the stronger model, with
+  // one retry on validation failure; fail-closed to a question otherwise.
+  const produceVerdict = async (): Promise<TurnResult> => {
+    {
       for (let attempt = 0; attempt < 2; attempt++) {
         const vResp = await call(models.verdict, VERDICT_MAX_TOKENS, true);
         const vUse = toolUses(vResp).find((u) => u.name === "final_answer");
@@ -273,6 +260,32 @@ export async function runTurn(
       transcript.push({ role: "assistant", content: retry.content as Block[] });
       return { type: "question", text: textOf(retry), transcript, usd };
     }
+  };
+
+  for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    const resp = await call(models.loop, LOOP_MAX_TOKENS, false);
+    const uses = toolUses(resp);
+    const finalCall = uses.find((u) => u.name === "final_answer");
+
+    if (finalCall) {
+      // The loop model decided to conclude — the verdict itself is written by
+      // the stronger model under the forced strict schema.
+      transcript.push({ role: "assistant", content: resp.content as Block[] });
+      transcript.push({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: finalCall.id,
+            content:
+              "Draft framework received. Now produce the authoritative final verdict by " +
+              "calling final_answer with complete reasoning, exact verbatim quotes and " +
+              "full caveats.",
+          },
+        ],
+      });
+      return produceVerdict();
+    }
 
     if (uses.length > 0) {
       transcript.push({ role: "assistant", content: resp.content as Block[] });
@@ -287,8 +300,30 @@ export async function runTurn(
       continue;
     }
 
+    const text = textOf(resp);
     transcript.push({ role: "assistant", content: resp.content as Block[] });
-    return { type: "question", text: textOf(resp), transcript, usd };
+
+    // NAKED-VERDICT ESCALATION: a live test produced a full prose conclusion
+    // ("Status: Listed ... 4A003.b") without calling final_answer — bypassing
+    // corpus validation entirely. Conclusive-looking prose is never returned:
+    // it is escalated into the validated verdict stage instead.
+    if (/\b(listed in annex|not listed in annex|status:\s*(listed|not[_ ]listed)|classification result)\b/i.test(text)) {
+      transcript.push({
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text:
+              "[system] Conclusions must be delivered ONLY through the final_answer tool, " +
+              "never as prose. Call final_answer now with complete reasoning, exact " +
+              "verbatim quotes and full caveats.",
+          },
+        ],
+      });
+      return produceVerdict();
+    }
+
+    return { type: "question", text, transcript, usd };
   }
 
   // Tool budget exhausted without an answer — surface the last state honestly.

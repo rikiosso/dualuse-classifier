@@ -226,3 +226,36 @@ describe("quote normalisation", () => {
     expect(quoteAppearsIn("completely different text", "range 5-10 nm")).toBe(false);
   });
 });
+
+describe("naked prose verdicts are escalated, never returned", () => {
+  it("conclusive text without final_answer triggers the validated verdict stage", async () => {
+    const client = new CannedClaudeClient([
+      textResp("Based on the APP of 100000 WT, this is Listed in Annex I under 4A003.b."),
+      toolResp("final_answer", GOOD_VERDICT, "tu_v"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "big gpu cluster" }], MODELS, 10);
+    expect(result.type).toBe("verdict"); // escalated into the validated path
+    expect(result.verdict?.entry_codes).toEqual(["3B501"]);
+    // the forced verdict call went to the verdict model
+    expect(client.requests[1].model).toBe("claude-sonnet-5");
+  });
+
+  it("ordinary questions mentioning entries are NOT escalated", async () => {
+    const client = new CannedClaudeClient([
+      textResp("Does the cluster exceed 70 Weighted TeraFLOPS as per 4A003.b?"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "gpu cluster" }], MODELS, 10);
+    expect(result.type).toBe("question");
+  });
+});
+
+describe("prompt cache TTL", () => {
+  it("system prefix carries the 1h TTL; message breakpoint stays default", async () => {
+    const client = new CannedClaudeClient([textResp("What is the APP?")]);
+    await runTurn(client, ANNEX, [{ role: "user", content: "gpu" }], MODELS, 10);
+    const req = client.requests[0] as { system: { cache_control?: { ttl?: string } }[]; messages: { content: { cache_control?: { ttl?: string } }[] }[] };
+    expect(req.system.at(-1)?.cache_control?.ttl).toBe("1h");
+    const lastMsg = req.messages.at(-1)!;
+    expect(lastMsg.content.at(-1)?.cache_control).toEqual({ type: "ephemeral" });
+  });
+});
