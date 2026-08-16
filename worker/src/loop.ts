@@ -177,6 +177,15 @@ export async function runTurn(
   maxUserTurns: number,
 ): Promise<TurnResult> {
   const transcript = sanitizeMessages(incoming, maxUserTurns);
+  // count REAL user turns (excludes tool_results and our "[system]" nudges)
+  const realUserTurns = transcript.filter(
+    (m) =>
+      m.role === "user" &&
+      Array.isArray(m.content) &&
+      m.content.some(
+        (b) => b.type === "text" && !String((b as { text?: string }).text ?? "").startsWith("[system]"),
+      ),
+  ).length;
   const systemBlocks = buildSystemBlocks(annex);
   // 1h TTL: humans answer interview questions slower than the default 5-minute
   // cache — without this, every turn re-writes the ~30k-token prefix at 1.25x
@@ -267,6 +276,26 @@ export async function runTurn(
     const uses = toolUses(resp);
     const finalCall = uses.find((u) => u.name === "final_answer");
 
+    if (finalCall && realUserTurns <= 1) {
+      // Never conclude on the opening message — a one-line description has not
+      // been tested against any discriminating parameter yet. Interview first.
+      transcript.push({ role: "assistant", content: resp.content as Block[] });
+      transcript.push({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: finalCall.id,
+            is_error: true,
+            content:
+              "[system] Too early to conclude: this is the user's opening message. Ask the " +
+              "single most discriminating technical question first (rule 2).",
+          },
+        ],
+      });
+      continue;
+    }
+
     if (finalCall) {
       // The loop model decided to conclude — the verdict itself is written by
       // the stronger model under the forced strict schema.
@@ -307,7 +336,11 @@ export async function runTurn(
     // ("Status: Listed ... 4A003.b") without calling final_answer — bypassing
     // corpus validation entirely. Conclusive-looking prose is never returned:
     // it is escalated into the validated verdict stage instead.
-    if (/\b(listed in annex|not listed in annex|status:\s*(listed|not[_ ]listed)|classification result)\b/i.test(text)) {
+    const conclusive =
+      /(^|\n)\s*\*{0,2}(status|result|classification)\*{0,2}\s*:\s*\*{0,2}(listed|not[_ ]?listed|needs[_ ]?expert)/i.test(text) ||
+      /\b(is|are)\s+(therefore\s+|clearly\s+|thus\s+)?(listed|not listed)\s+in\s+annex\s+i\b/i.test(text) ||
+      /classification result/i.test(text);
+    if (conclusive && realUserTurns > 1) {
       transcript.push({
         role: "user",
         content: [
@@ -321,6 +354,21 @@ export async function runTurn(
         ],
       });
       return produceVerdict();
+    }
+    if (conclusive) {
+      // conclusive prose on the opening message: interview instead
+      transcript.push({
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text:
+              "[system] Too early to conclude. Ask the single most discriminating " +
+              "technical question first (rule 2); conclusions only via final_answer.",
+          },
+        ],
+      });
+      continue;
     }
 
     return { type: "question", text, transcript, usd };

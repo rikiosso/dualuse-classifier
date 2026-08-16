@@ -133,7 +133,17 @@ describe("runTurn", () => {
       toolResp("final_answer", GOOD_VERDICT),
       toolResp("final_answer", GOOD_VERDICT, "tu_2"),
     ]);
-    const result = await runTurn(client, ANNEX, [{ role: "user", content: "193nm litho" }], MODELS, 10);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [
+        { role: "user", content: "193nm litho stepper" },
+        { role: "assistant", content: "What is the MRF?" },
+        { role: "user", content: "MRF is 38 nm, chuck overlay 1.2 nm" },
+      ],
+      MODELS,
+      10,
+    );
     expect(result.type).toBe("verdict");
     expect(result.verdict?.corpus_version).toBe("02021R0821-20251115");
     expect(result.verdict?.prompt_sha256).toHaveLength(64);
@@ -153,7 +163,17 @@ describe("runTurn", () => {
       toolResp("final_answer", badVerdict, "tu_3"),
       textResp("Could you tell me the exact wavelength of the source?"),
     ]);
-    const result = await runTurn(client, ANNEX, [{ role: "user", content: "litho" }], MODELS, 10);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [
+        { role: "user", content: "litho tool" },
+        { role: "assistant", content: "What wavelength?" },
+        { role: "user", content: "193 nm" },
+      ],
+      MODELS,
+      10,
+    );
     expect(result.type).toBe("question"); // never a verdict with invented quotes
   });
 });
@@ -207,7 +227,17 @@ describe("verdict transcript is a valid follow-up array", () => {
       toolResp("final_answer", GOOD_VERDICT),
       toolResp("final_answer", GOOD_VERDICT, "tu_2"),
     ]);
-    const result = await runTurn(client, ANNEX, [{ role: "user", content: "193nm litho" }], MODELS, 10);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [
+        { role: "user", content: "193nm litho stepper" },
+        { role: "assistant", content: "What is the MRF?" },
+        { role: "user", content: "MRF is 38 nm" },
+      ],
+      MODELS,
+      10,
+    );
     const last = result.transcript.at(-1);
     expect(last?.role).toBe("user");
     const blocks = last?.content;
@@ -233,7 +263,17 @@ describe("naked prose verdicts are escalated, never returned", () => {
       textResp("Based on the APP of 100000 WT, this is Listed in Annex I under 4A003.b."),
       toolResp("final_answer", GOOD_VERDICT, "tu_v"),
     ]);
-    const result = await runTurn(client, ANNEX, [{ role: "user", content: "big gpu cluster" }], MODELS, 10);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [
+        { role: "user", content: "big gpu cluster" },
+        { role: "assistant", content: "What is the APP?" },
+        { role: "user", content: "100000 WT, military use" },
+      ],
+      MODELS,
+      10,
+    );
     expect(result.type).toBe("verdict"); // escalated into the validated path
     expect(result.verdict?.entry_codes).toEqual(["3B501"]);
     // the forced verdict call went to the verdict model
@@ -257,5 +297,26 @@ describe("prompt cache TTL", () => {
     expect(req.system.at(-1)?.cache_control?.ttl).toBe("1h");
     const lastMsg = req.messages.at(-1)!;
     expect(lastMsg.content.at(-1)?.cache_control).toEqual({ type: "ephemeral" });
+  });
+});
+
+describe("first-turn interview guard", () => {
+  it("an instant final_answer on the opening message is bounced into a question", async () => {
+    const client = new CannedClaudeClient([
+      toolResp("final_answer", GOOD_VERDICT), // eager conclusion on turn 1
+      textResp("First: what is the light source wavelength?"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "a litho machine" }], MODELS, 10);
+    expect(result.type).toBe("question");
+    expect(result.text).toContain("wavelength");
+  });
+
+  it("conclusive prose on the opening message is bounced into a question too", async () => {
+    const client = new CannedClaudeClient([
+      textResp("Classification result: this is clearly listed in Annex I under 3B501."),
+      textResp("Before concluding: what is the wavelength?"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "a litho machine" }], MODELS, 10);
+    expect(result.type).toBe("question");
   });
 });
