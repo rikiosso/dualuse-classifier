@@ -67,13 +67,53 @@
     });
   }
 
+  // Render assistant text with ONLY **bold** honoured — built via DOM nodes
+  // (createTextNode/strong.textContent), so no markup of any kind can inject.
+  function renderInline(parent, text) {
+    const parts = String(text).split(/\*\*/);
+    for (let i = 0; i < parts.length; i++) {
+      if (i % 2 === 1 && i < parts.length - (parts.length % 2 === 0 ? 1 : 0)) {
+        const b = document.createElement("strong");
+        b.textContent = parts[i];
+        parent.appendChild(b);
+      } else {
+        parent.appendChild(document.createTextNode(parts[i]));
+      }
+    }
+  }
+
   function addBubble(cls, text) {
     const div = document.createElement("div");
     div.className = "msg " + cls;
-    div.textContent = text;
+    if (cls === "assistant") renderInline(div, text);
+    else div.textContent = text;
     messagesEl.appendChild(div);
     div.scrollIntoView({ behavior: "smooth", block: "end" });
     return div;
+  }
+
+  // Clipboard with fallback: navigator.clipboard is refused in some browsers /
+  // permission states, so fall back to the classic textarea+execCommand path.
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand("copy");
+        ta.remove();
+        return ok;
+      } catch {
+        return false;
+      }
+    }
   }
 
   function verdictAsText(v) {
@@ -129,7 +169,7 @@
       q.appendChild(path);
       q.appendChild(document.createTextNode('"' + r.verbatim_quote + '"'));
       const expl = document.createElement("div");
-      expl.textContent = r.explanation;
+      renderInline(expl, r.explanation);
       q.appendChild(expl);
       card.appendChild(q);
     }
@@ -147,13 +187,9 @@
     copyBtn.type = "button";
     copyBtn.textContent = "Copy result";
     copyBtn.addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(verdictAsText(v));
-        copyBtn.textContent = "Copied ✓";
-        setTimeout(() => (copyBtn.textContent = "Copy result"), 1500);
-      } catch {
-        copyBtn.textContent = "Copy failed";
-      }
+      const ok = await copyText(verdictAsText(v));
+      copyBtn.textContent = ok ? "Copied ✓" : "Copy failed — select the text manually";
+      setTimeout(() => (copyBtn.textContent = "Copy result"), 2500);
     });
     card.appendChild(copyBtn);
 
