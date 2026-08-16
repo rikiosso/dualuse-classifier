@@ -111,6 +111,7 @@ Union is authentic. Code: MIT.
 
 ---
 
-Built by Ricardo Álvarez-Ossorio Castro — export-controls and tech lawyer
-(add your LinkedIn profile URL here). Part of a series: [Export Controls Watch](https://rikiosso.github.io/exports-watch/)
-(autonomous monitoring) → this classifier (interactive triage).
+Built by [Ricardo Álvarez-Ossorio Castro](https://www.linkedin.com/in/ricardo-ossorio) —
+export-controls and tech lawyer. Part of a series:
+[Export Controls Watch](https://rikiosso.github.io/exports-watch/) (autonomous monitoring) →
+this classifier (interactive triage).
