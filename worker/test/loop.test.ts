@@ -300,23 +300,40 @@ describe("prompt cache TTL", () => {
   });
 });
 
-describe("first-turn interview guard", () => {
-  it("an instant final_answer on the opening message is bounced into a question", async () => {
+describe("first-turn behaviour", () => {
+  it("a FULLY SPECIFIED opening message may verdict immediately (listed)", async () => {
     const client = new CannedClaudeClient([
-      toolResp("final_answer", GOOD_VERDICT), // eager conclusion on turn 1
-      textResp("First: what is the light source wavelength?"),
+      toolResp("final_answer", GOOD_VERDICT),
+      toolResp("final_answer", GOOD_VERDICT, "tu_2"),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [{ role: "user", content: "193nm litho stepper, MRF 38nm, chuck overlay 1.2nm" }],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("verdict"); // the scenario-2 regression
+    expect(result.verdict?.entry_codes).toEqual(["3B501"]);
+  });
+
+  it("needs_expert on the opening message is bounced into a real question", async () => {
+    const NEEDS_EXPERT: Verdict = {
+      status: "needs_expert",
+      entry_codes: [],
+      reasoning: [],
+      caveats: ["Indicative only."],
+      definitions_used: [],
+    };
+    const client = new CannedClaudeClient([
+      toolResp("final_answer", NEEDS_EXPERT),
+      toolResp("final_answer", NEEDS_EXPERT, "tu_2"), // forced verdict call
+      textResp("What is the light source wavelength?"), // askOneQuestion
     ]);
     const result = await runTurn(client, ANNEX, [{ role: "user", content: "a litho machine" }], MODELS, 10);
     expect(result.type).toBe("question");
     expect(result.text).toContain("wavelength");
-  });
-
-  it("conclusive prose on the opening message is bounced into a question too", async () => {
-    const client = new CannedClaudeClient([
-      textResp("Classification result: this is clearly listed in Annex I under 3B501."),
-      textResp("Before concluding: what is the wavelength?"),
-    ]);
-    const result = await runTurn(client, ANNEX, [{ role: "user", content: "a litho machine" }], MODELS, 10);
-    expect(result.type).toBe("question");
+    // the question call must have tools disabled so it cannot stall
+    expect(JSON.stringify(client.requests.at(-1)?.tool_choice)).toContain("none");
   });
 });

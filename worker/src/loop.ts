@@ -210,6 +210,23 @@ export async function runTurn(
     return resp;
   };
 
+  // One question, no tools: guarantees a real, contentful interview turn.
+  const askOneQuestion = async (): Promise<TurnResult> => {
+    const resp = await client.complete({
+      model: models.loop,
+      max_tokens: LOOP_MAX_TOKENS,
+      system,
+      messages: transcript.map((m, i) =>
+        i === transcript.length - 1 ? { ...m, content: withCache(m.content) } : m,
+      ),
+      tools,
+      tool_choice: { type: "none" },
+    });
+    usd += estimateUsd(models.loop, resp.usage);
+    transcript.push({ role: "assistant", content: resp.content as Block[] });
+    return { type: "question", text: textOf(resp), transcript, usd };
+  };
+
   // The verdict stage: forced strict final_answer on the stronger model, with
   // one retry on validation failure; fail-closed to a question otherwise.
   const produceVerdict = async (): Promise<TurnResult> => {
@@ -221,6 +238,24 @@ export async function runTurn(
         const verdict = vUse.input as Verdict;
         const problems = validateVerdict(verdict, annex);
         transcript.push({ role: "assistant", content: vResp.content as Block[] });
+        if (problems.length === 0 && verdict.status === "needs_expert" && realUserTurns <= 1) {
+          // Giving up on the opening message is premature — a fully specified
+          // description may verdict on turn one, but "ask an expert" may not.
+          transcript.push({
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: vUse.id,
+                is_error: true,
+                content:
+                  "[system] needs_expert is premature on the user's opening message. Ask " +
+                  "the single most discriminating technical question instead (rule 2).",
+              },
+            ],
+          });
+          return askOneQuestion();
+        }
         if (problems.length === 0) {
           // close the tool_use so the returned transcript is a valid Anthropic
           // array — a follow-up turn would otherwise 400 on an unpaired tool_use
@@ -276,26 +311,6 @@ export async function runTurn(
     const uses = toolUses(resp);
     const finalCall = uses.find((u) => u.name === "final_answer");
 
-    if (finalCall && realUserTurns <= 1) {
-      // Never conclude on the opening message — a one-line description has not
-      // been tested against any discriminating parameter yet. Interview first.
-      transcript.push({ role: "assistant", content: resp.content as Block[] });
-      transcript.push({
-        role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: finalCall.id,
-            is_error: true,
-            content:
-              "[system] Too early to conclude: this is the user's opening message. Ask the " +
-              "single most discriminating technical question first (rule 2).",
-          },
-        ],
-      });
-      continue;
-    }
-
     if (finalCall) {
       // The loop model decided to conclude — the verdict itself is written by
       // the stronger model under the forced strict schema.
@@ -340,7 +355,7 @@ export async function runTurn(
       /(^|\n)\s*\*{0,2}(status|result|classification)\*{0,2}\s*:\s*\*{0,2}(listed|not[_ ]?listed|needs[_ ]?expert)/i.test(text) ||
       /\b(is|are)\s+(therefore\s+|clearly\s+|thus\s+)?(listed|not listed)\s+in\s+annex\s+i\b/i.test(text) ||
       /classification result/i.test(text);
-    if (conclusive && realUserTurns > 1) {
+    if (conclusive) {
       transcript.push({
         role: "user",
         content: [
@@ -355,34 +370,19 @@ export async function runTurn(
       });
       return produceVerdict();
     }
-    if (conclusive) {
-      // conclusive prose on the opening message: interview instead
-      transcript.push({
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text:
-              "[system] Too early to conclude. Ask the single most discriminating " +
-              "technical question first (rule 2); conclusions only via final_answer.",
-          },
-        ],
-      });
-      continue;
-    }
 
     return { type: "question", text, transcript, usd };
   }
 
-  // Tool budget exhausted without an answer — surface the last state honestly.
+  // Tool budget exhausted — force one real question instead of canned filler.
   transcript.push({
-    role: "assistant",
-    content: [{ type: "text", text: "I need to narrow this down — let me ask you directly." }],
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: "[system] Stop looking things up. Ask the user your single most important discriminating question now.",
+      },
+    ],
   });
-  return {
-    type: "question",
-    text: "I need to narrow this down — could you give me the key technical parameters (e.g. performance figures, wavelengths, materials)?",
-    transcript,
-    usd,
-  };
+  return askOneQuestion();
 }
