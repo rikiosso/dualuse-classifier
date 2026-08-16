@@ -217,3 +217,12 @@ describe("verdict transcript is a valid follow-up array", () => {
     expect((flat.match(/"tool_use"/g) || []).length).toBeGreaterThan(0);
   });
 });
+
+describe("quote normalisation", () => {
+  it("treats typographic quotes and dashes as their ASCII forms", async () => {
+    const { quoteAppearsIn } = await import("../src/annexData");
+    expect(quoteAppearsIn("a 'Minimum Resolvable Feature size' (‘MRF’)", "A ‘Minimum Resolvable Feature size’ ('MRF')")).toBe(true);
+    expect(quoteAppearsIn("range 5–10 nm", "range 5-10 nm")).toBe(true);
+    expect(quoteAppearsIn("completely different text", "range 5-10 nm")).toBe(false);
+  });
+});

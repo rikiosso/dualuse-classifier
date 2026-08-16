@@ -35,7 +35,7 @@ let cached: { data: AnnexDataset; at: number } | null = null;
 
 export async function loadAnnex(
   url: string,
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch = (...args: Parameters<typeof fetch>) => fetch(...args),
 ): Promise<AnnexDataset> {
   if (cached && Date.now() - cached.at < TTL_MS) return cached.data;
   const resp = await fetcher(url, { headers: { accept: "application/json" } });
@@ -91,7 +91,18 @@ export function definitionsFor(annex: AnnexDataset, terms: string[]): string {
 // Whitespace-normalised substring check: is `quote` genuinely somewhere in the
 // corpus text? Used to refuse verdicts citing invented text.
 export function quoteAppearsIn(quote: string, text: string): boolean {
-  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  // normalise whitespace AND typographic variants: the Formex corpus uses curly
+  // quotes/dashes ('MRF', "digital", –) that models render as ASCII — those are
+  // the same quote, not an invention
+  const norm = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'")
+      .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+      .replace(/[\u2010-\u2015\u2212]/g, "-")
+      .replace(/\u00A0/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
   const q = norm(quote);
   return q.length > 0 && norm(text).includes(q);
 }

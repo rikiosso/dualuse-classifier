@@ -31,7 +31,9 @@ export interface ClaudeClient {
 export class AnthropicClient implements ClaudeClient {
   constructor(
     private apiKey: string,
-    private fetcher: typeof fetch = fetch,
+    // bound wrapper: a bare `fetch` reference invoked as `this.fetcher(...)`
+    // throws "Illegal invocation" in workerd (wrong `this`)
+    private fetcher: typeof fetch = (...args: Parameters<typeof fetch>) => fetch(...args),
   ) {}
 
   async complete(req: ClaudeRequest): Promise<ClaudeResponse> {
