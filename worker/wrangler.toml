@@ -11,7 +11,7 @@ kv_namespaces = [
 [vars]
 ALLOWED_ORIGINS = "https://rikiosso.github.io"
 ANNEX_URL = "https://rikiosso.github.io/exports-watch/data/annex.json"
-DAILY_BUDGET_USD = "0.30"
+DAILY_BUDGET_USD = "1.00"
 MONTHLY_BUDGET_USD = "10"
 IP_DAILY_CONVERSATIONS = "2"
 MAX_TURNS = "10"

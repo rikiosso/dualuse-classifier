@@ -41,9 +41,13 @@
       } else {
         statusEl.textContent = "○ Assistant resting (daily demo budget spent) · " + corpus;
         showBudgetBanner(
-          "The AI assistant has used up today's demo budget — Browse mode below works fully; the assistant is back tomorrow.",
+          "⏸️ The AI assistant has used up today's demo budget and is resting until tomorrow (UTC). " +
+            "This is the cost cap working as designed — Browse Annex I below is fully available and free.",
           false,
         );
+        input.disabled = true;
+        input.placeholder = "The assistant is resting until tomorrow — Browse mode works fully.";
+        sendBtn.disabled = true;
       }
     } catch {
       statusEl.textContent = "";
