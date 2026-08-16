@@ -50,3 +50,15 @@ describe("estimateUsd", () => {
     expect(usd).toBeCloseTo(0.0065, 5);
   });
 });
+
+describe("tester bypass", () => {
+  it("skips only the per-IP cap; spend caps still gate", async () => {
+    const kv = new FakeKV();
+    for (let i = 0; i < 5; i++) {
+      expect((await checkBudget(kv, BUDGET, "1.2.3.4", "s", true, true)).ok).toBe(true);
+    }
+    await recordSpend(kv, 0.31);
+    const gated = await checkBudget(kv, BUDGET, "1.2.3.4", "s", true, true);
+    expect(gated).toEqual({ ok: false, reason: "daily_budget_exhausted" });
+  });
+});

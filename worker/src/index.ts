@@ -18,6 +18,7 @@ export interface Env {
   IP_DAILY_CONVERSATIONS: string;
   MAX_TURNS: string;
   IP_SALT: string;
+  TESTER_KEY?: string;
   LOOP_MODEL: string;
   VERDICT_MODEL: string;
 }
@@ -42,7 +43,7 @@ function corsHeaders(origin: string | null, allowed: string[]): Record<string, s
   return {
     "access-control-allow-origin": ok ? origin : (allowed[0] ?? ""),
     "access-control-allow-methods": "GET, POST, OPTIONS",
-    "access-control-allow-headers": "content-type",
+    "access-control-allow-headers": "content-type, x-tester-key",
     vary: "origin",
   };
 }
@@ -125,12 +126,15 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
     Array.isArray(messages) &&
     messages.filter((m) => (m as { role?: string }).role === "user").length <= 1;
 
+  const testerKey = request.headers.get("x-tester-key");
+  const isTester = Boolean(env.TESTER_KEY && testerKey && testerKey === env.TESTER_KEY);
   const gate = await checkBudget(
     env.BUDGET_KV,
     budgetOf(env),
     request.headers.get("cf-connecting-ip") ?? "unknown",
     env.IP_SALT || "dualuse",
     isStart,
+    isTester,
   );
   if (!gate.ok) return json({ type: "error", reason: gate.reason }, 429, cors);
 

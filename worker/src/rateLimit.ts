@@ -41,12 +41,14 @@ export async function checkBudget(
   ip: string,
   salt: string,
   isConversationStart: boolean,
+  skipIpCap = false, // tester bypass: fairness cap only — spend caps always apply
 ): Promise<{ ok: true } | { ok: false; reason: "daily_budget_exhausted" | "rate_limited" }> {
   const daySpend = parseFloat((await kv.get(`spend:${today()}`)) ?? "0");
   const monthSpend = parseFloat((await kv.get(`spend:${thisMonth()}`)) ?? "0");
   if (daySpend >= budget.dailyUsd || monthSpend >= budget.monthlyUsd) {
     return { ok: false, reason: "daily_budget_exhausted" };
   }
+  if (skipIpCap) return { ok: true };
   const ipKey = `ip:${await hashIp(ip, salt)}:${today()}`;
   const ipCount = parseInt((await kv.get(ipKey)) ?? "0", 10);
   if (isConversationStart) {

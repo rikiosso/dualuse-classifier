@@ -7,6 +7,10 @@
   "use strict";
 
   const cfg = window.CLASSIFIER_CONFIG || {};
+  // owner/tester bypass of the per-visitor cap: visit once with ?tester=CODE
+  const testerParam = new URLSearchParams(location.search).get("tester");
+  if (testerParam) sessionStorage.setItem("tester_key", testerParam);
+  const testerKey = sessionStorage.getItem("tester_key");
   const $ = (id) => document.getElementById(id);
   const workerReady = cfg.WORKER_URL && !cfg.WORKER_URL.startsWith("REPLACE");
 
@@ -240,7 +244,10 @@
     try {
       const resp = await fetch(cfg.WORKER_URL.replace(/\/$/, "") + "/api/chat", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          ...(testerKey ? { "x-tester-key": testerKey } : {}),
+        },
         body: JSON.stringify({ messages: transcript }),
       });
       const data = await resp.json();
