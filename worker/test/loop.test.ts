@@ -337,3 +337,72 @@ describe("first-turn behaviour", () => {
     expect(JSON.stringify(client.requests.at(-1)?.tool_choice)).toContain("none");
   });
 });
+
+describe("licensing pathway (stage 2)", () => {
+  const ANNEX2: typeof ANNEX = {
+    ...ANNEX,
+    geas: [
+      {
+        id: "EU001",
+        title: "EU001 — A.EXPORTS TO AUSTRALIA...UNITED STATES",
+        verbatim_text:
+          "1. This authorisation covers exports to the United States of America of all dual-use items except those listed in Section I of this Annex.\n2. Registration with the competent authority is required within 30 days of first use.",
+      },
+    ],
+    gea_common_list: "Items excluded from EU001, EU003, EU004 and EU007: 3B501 lithography equipment of section f.",
+  };
+  const GOOD_PATHWAY = {
+    destination: "United States",
+    eligible_gea: "EU001",
+    outcome: "gea_available",
+    conditions_quoted: [
+      {
+        gea_id: "EU001",
+        verbatim_quote: "Registration with the competent authority is required within 30 days",
+        explanation: "EU001 covers the US; registration condition applies.",
+      },
+    ],
+    caveats: ["Draft determination — requires legal review."],
+  };
+
+  it("validatePathway accepts a grounded pathway and rejects invented quotes", async () => {
+    const { validatePathway } = await import("../src/loop");
+    expect(validatePathway(GOOD_PATHWAY as never, ANNEX2)).toEqual([]);
+    const bad = {
+      ...GOOD_PATHWAY,
+      conditions_quoted: [{ gea_id: "EU001", verbatim_quote: "totally invented condition text", explanation: "x" }],
+    };
+    expect(validatePathway(bad as never, ANNEX2).join(" ")).toContain("not found");
+  });
+
+  it("sanctioned destinations can never get a green light", async () => {
+    const { validatePathway } = await import("../src/loop");
+    const toRussia = { ...GOOD_PATHWAY, destination: "Russia" };
+    expect(validatePathway(toRussia as never, ANNEX2).join(" ")).toContain("sanctions_review_required");
+    const flagged = { ...toRussia, outcome: "sanctions_review_required", eligible_gea: "", conditions_quoted: [] };
+    expect(validatePathway(flagged as never, ANNEX2)).toEqual([]);
+  });
+
+  it("a license_pathway call routes through the forced validated stage", async () => {
+    const client = new CannedClaudeClient([
+      toolResp("license_pathway", GOOD_PATHWAY),
+      toolResp("license_pathway", GOOD_PATHWAY, "tu_p2"),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX2,
+      [
+        { role: "user", content: "my 3B501 tool, verdict was listed" },
+        { role: "assistant", content: "What is the destination?" },
+        { role: "user", content: "United States, civil fab customer" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("pathway");
+    expect(result.pathway?.eligible_gea).toBe("EU001");
+    expect(result.pathway?.corpus_version).toBe("02021R0821-20251115");
+    expect(client.requests[1].model).toBe("claude-sonnet-5");
+    expect(JSON.stringify(client.requests[1].tool_choice)).toContain("license_pathway");
+  });
+});

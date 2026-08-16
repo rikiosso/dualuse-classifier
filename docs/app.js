@@ -221,6 +221,70 @@
     card.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
+  function addPathwayCard(pw) {
+    const card = document.createElement("div");
+    card.className = "verdict pathway " + pw.outcome;
+    const h = document.createElement("h3");
+    h.textContent = "Licensing pathway";
+    card.appendChild(h);
+
+    const label = {
+      gea_available: "EU General Export Authorisation available",
+      individual_licence_required: "Individual authorisation required",
+      sanctions_review_required: "⚠️ Sanctions regime — legal review required",
+    };
+    const status = document.createElement("p");
+    const st = document.createElement("span");
+    st.className = "status " + (pw.outcome === "gea_available" ? "not_listed" : pw.outcome === "individual_licence_required" ? "needs_expert" : "listed");
+    st.textContent = label[pw.outcome] || pw.outcome;
+    status.appendChild(st);
+    if (pw.eligible_gea) {
+      status.appendChild(document.createTextNode(" — "));
+      const code = document.createElement("span");
+      code.className = "code";
+      code.textContent = pw.eligible_gea;
+      status.appendChild(code);
+    }
+    status.appendChild(document.createTextNode(" · destination: " + pw.destination));
+    card.appendChild(status);
+
+    for (const c of pw.conditions_quoted || []) {
+      const q = document.createElement("blockquote");
+      const gid = document.createElement("span");
+      gid.className = "code";
+      gid.textContent = c.gea_id + ": ";
+      q.appendChild(gid);
+      q.appendChild(document.createTextNode('"' + c.verbatim_quote + '"'));
+      const expl = document.createElement("div");
+      renderInline(expl, c.explanation);
+      q.appendChild(expl);
+      card.appendChild(q);
+    }
+
+    const cav = document.createElement("div");
+    cav.className = "caveats";
+    const parts = [...(pw.caveats || [])];
+    if (pw.disclaimer) parts.push(pw.disclaimer);
+    parts.push("Corpus version: " + pw.corpus_version);
+    cav.textContent = parts.join(" · ");
+    card.appendChild(cav);
+
+    const review = document.createElement("p");
+    review.className = "review-cta";
+    review.appendChild(document.createTextNode("This is a draft determination — "));
+    const a = document.createElement("a");
+    a.href = "https://www.linkedin.com/in/ricardo-ossorio";
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = "request legal review";
+    review.appendChild(a);
+    review.appendChild(document.createTextNode(" before relying on it."));
+    card.appendChild(review);
+
+    messagesEl.appendChild(card);
+    card.scrollIntoView({ behavior: "smooth", block: "end" });
+  }
+
   function showBudgetBanner(text, switchToBrowse) {
     banner.textContent = text;
     banner.classList.remove("hidden");
@@ -259,6 +323,11 @@
         transcript = data.messages;
         if (data.text) addBubble("assistant", data.text);
         addVerdictCard(data.verdict);
+        addBubble("assistant", "If you tell me the destination country and end-use, I can also determine the licensing pathway (EU General Export Authorisations).");
+      } else if (data.type === "pathway") {
+        transcript = data.messages;
+        if (data.text) addBubble("assistant", data.text);
+        addPathwayCard(data.pathway);
       } else {
         const reason = data.reason || "unknown";
         if (reason === "daily_budget_exhausted") {

@@ -38,6 +38,12 @@ const FIXED_DISCLAIMER =
   "(Art. 4 and 5, Regulation (EU) 2021/821) may apply regardless of listing; a " +
   "licensing authority or qualified counsel has the final word.";
 
+const PATHWAY_DISCLAIMER =
+  "Draft licensing determination — requires review by qualified export-control " +
+  "counsel before any reliance. National general licences, sanctions regimes and " +
+  "authority practice may change the outcome; only your national competent " +
+  "authority can grant or confirm an authorisation.";
+
 function corsHeaders(origin: string | null, allowed: string[]): Record<string, string> {
   const ok = origin !== null && allowed.includes(origin);
   return {
@@ -167,6 +173,9 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
         text: result.text,
         messages: result.transcript,
         ...(result.verdict ? { verdict: { ...result.verdict, disclaimer: FIXED_DISCLAIMER } } : {}),
+        ...(result.pathway
+          ? { pathway: { ...result.pathway, disclaimer: PATHWAY_DISCLAIMER } }
+          : {}),
       },
       200,
       cors,

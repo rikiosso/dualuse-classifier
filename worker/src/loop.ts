@@ -7,10 +7,18 @@
 // by code, not prompt).
 
 import type { AnnexDataset } from "./annexData";
-import { definitionsFor, entryByCode, provisionText, quoteAppearsIn } from "./annexData";
+import { definitionsFor, entryByCode, geaById, geaScopeText, provisionText, quoteAppearsIn } from "./annexData";
 import type { ClaudeClient, ClaudeResponse } from "./claudeClient";
 import { buildSystemBlocks, promptSha256 } from "./prompt";
-import { FINAL_ANSWER_TOOL, LOOKUP_DEFINITIONS_TOOL, LOOKUP_ENTRIES_TOOL, Verdict } from "./tools";
+import {
+  FINAL_ANSWER_TOOL,
+  LICENSE_PATHWAY_TOOL,
+  LOOKUP_DEFINITIONS_TOOL,
+  LOOKUP_ENTRIES_TOOL,
+  LOOKUP_GEA_TOOL,
+  Pathway,
+  Verdict,
+} from "./tools";
 import { estimateUsd } from "./rateLimit";
 
 const MAX_TOOL_ITERATIONS = 3;
@@ -32,12 +40,19 @@ type Block = { type: string; [k: string]: unknown };
 type Msg = { role: "user" | "assistant"; content: Block[] | string };
 
 export interface TurnResult {
-  type: "question" | "verdict";
+  type: "question" | "verdict" | "pathway";
   text: string;
   transcript: Msg[];
   verdict?: Verdict & { corpus_version: string; corpus_sha256: string; prompt_sha256: string };
+  pathway?: Pathway & { corpus_version: string; corpus_sha256: string; prompt_sha256: string };
   usd: number;
 }
+
+// Destinations whose sanctions regimes this tool must FLAG and never resolve —
+// separate regulations with their own complexity; a wrong answer here is the
+// most expensive mistake the tool could make. Enforced server-side.
+const SANCTIONED_DESTINATIONS =
+  /\b(russia|russian|belarus|iran|north korea|dprk|syria|crimea|donetsk|luhansk|myanmar|venezuela)\b/i;
 
 export class InvalidRequest extends Error {}
 
@@ -113,7 +128,54 @@ function execLookup(annex: AnnexDataset, name: string, input: Record<string, unk
   if (name === "lookup_definitions") {
     return definitionsFor(annex, (Array.isArray(input.terms) ? input.terms : []).map(String));
   }
+  if (name === "lookup_gea") {
+    const ids = (Array.isArray(input.ids) ? input.ids : []).slice(0, 4).map(String);
+    if (ids.length === 0) return "No ids given.";
+    return ids
+      .map((id) => {
+        const text = geaScopeText(annex, id);
+        return text
+          ? `=== ${id.toUpperCase().trim()} ===\n${text}`
+          : `No GEA ${id} in this corpus version.`;
+      })
+      .join("\n\n");
+  }
   return `Unknown tool ${name}.`;
+}
+
+// Pathway validation — same discipline as verdicts: quotes verbatim-in-scope,
+// referenced GEAs must exist, sanctioned destinations MUST carry the sanctions
+// outcome (never a green light), a GEA outcome needs quoted conditions.
+export function validatePathway(pw: Pathway, annex: AnnexDataset): string[] {
+  const problems: string[] = [];
+  if (pw.caveats.length === 0) problems.push("caveats must not be empty");
+  if (!pw.destination.trim()) problems.push("destination must be stated");
+  if (SANCTIONED_DESTINATIONS.test(pw.destination) && pw.outcome !== "sanctions_review_required") {
+    problems.push(
+      `destination "${pw.destination}" is under an EU sanctions regime — outcome must be sanctions_review_required`,
+    );
+  }
+  if (pw.outcome === "gea_available") {
+    if (!pw.eligible_gea || !geaById(annex, pw.eligible_gea)) {
+      problems.push(`eligible_gea ${pw.eligible_gea || "(empty)"} does not exist in the corpus`);
+    }
+    if (pw.conditions_quoted.length === 0) {
+      problems.push("gea_available requires quoted conditions");
+    }
+  }
+  for (const c of pw.conditions_quoted) {
+    const scope = geaScopeText(annex, c.gea_id);
+    if (!scope) {
+      problems.push(`conditions cite nonexistent GEA ${c.gea_id}`);
+    } else if (c.verbatim_quote.replace(/\s+/g, " ").trim().length < MIN_QUOTE_CHARS) {
+      problems.push(`condition quote for ${c.gea_id} is too short to anchor`);
+    } else if (!quoteAppearsIn(c.verbatim_quote, scope)) {
+      problems.push(
+        `condition quote for ${c.gea_id} not found in that authorisation's text — copy exactly from lookup_gea output`,
+      );
+    }
+  }
+  return problems;
 }
 
 // Server-side verdict validation — the NakedVerdict discipline. Returns a list
@@ -191,10 +253,16 @@ export async function runTurn(
   // cache — without this, every turn re-writes the ~30k-token prefix at 1.25x
   // and a single slow conversation costs ~3x more than it should
   const system = withCache(systemBlocks as Block[], "1h");
-  const tools = [LOOKUP_ENTRIES_TOOL, LOOKUP_DEFINITIONS_TOOL, FINAL_ANSWER_TOOL];
+  const tools = [
+    LOOKUP_ENTRIES_TOOL,
+    LOOKUP_DEFINITIONS_TOOL,
+    LOOKUP_GEA_TOOL,
+    FINAL_ANSWER_TOOL,
+    LICENSE_PATHWAY_TOOL,
+  ];
   let usd = 0;
 
-  const call = async (model: string, maxTokens: number, forced: boolean) => {
+  const call = async (model: string, maxTokens: number, forced: false | string) => {
     const msgs = transcript.map((m, i) =>
       i === transcript.length - 1 ? { ...m, content: withCache(m.content) } : m,
     );
@@ -204,7 +272,7 @@ export async function runTurn(
       system,
       messages: msgs,
       tools,
-      ...(forced ? { tool_choice: { type: "tool", name: "final_answer" } } : {}),
+      ...(forced ? { tool_choice: { type: "tool", name: forced } } : {}),
     });
     usd += estimateUsd(model, resp.usage);
     return resp;
@@ -232,7 +300,7 @@ export async function runTurn(
   const produceVerdict = async (): Promise<TurnResult> => {
     {
       for (let attempt = 0; attempt < 2; attempt++) {
-        const vResp = await call(models.verdict, VERDICT_MAX_TOKENS, true);
+        const vResp = await call(models.verdict, VERDICT_MAX_TOKENS, "final_answer");
         const vUse = toolUses(vResp).find((u) => u.name === "final_answer");
         if (!vUse) break;
         const verdict = vUse.input as Verdict;
@@ -306,10 +374,82 @@ export async function runTurn(
     }
   };
 
+  // Stage-2 twin of produceVerdict: forced strict license_pathway, validated,
+  // one retry, fail-closed to a question.
+  const producePathway = async (): Promise<TurnResult> => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const pResp = await call(models.verdict, VERDICT_MAX_TOKENS, "license_pathway");
+      const pUse = toolUses(pResp).find((u) => u.name === "license_pathway");
+      if (!pUse) break;
+      const pathway = pUse.input as Pathway;
+      const problems = validatePathway(pathway, annex);
+      transcript.push({ role: "assistant", content: pResp.content as Block[] });
+      if (problems.length === 0) {
+        transcript.push({
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: pUse.id, content: "Pathway recorded." }],
+        });
+        return {
+          type: "pathway",
+          text: textOf(pResp),
+          transcript,
+          pathway: {
+            ...pathway,
+            corpus_version: annex.corpus_version,
+            corpus_sha256: annex.sha256,
+            prompt_sha256: await promptSha256(),
+          },
+          usd,
+        };
+      }
+      transcript.push({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: pUse.id,
+            is_error: true,
+            content: `Pathway rejected by validation: ${problems.join("; ")}. Correct and call license_pathway again.`,
+          },
+        ],
+      });
+    }
+    transcript.push({
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text:
+            "[system] The licensing pathway could not be validated. Ask the user for the " +
+            "missing facts (destination, end-use) instead of concluding.",
+        },
+      ],
+    });
+    return askOneQuestion();
+  };
+
   for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
     const resp = await call(models.loop, LOOP_MAX_TOKENS, false);
     const uses = toolUses(resp);
     const finalCall = uses.find((u) => u.name === "final_answer");
+    const pathwayCall = uses.find((u) => u.name === "license_pathway");
+
+    if (pathwayCall && !finalCall) {
+      transcript.push({ role: "assistant", content: resp.content as Block[] });
+      transcript.push({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: pathwayCall.id,
+            content:
+              "Draft received. Now produce the authoritative licensing pathway by calling " +
+              "license_pathway with exact verbatim quotes from lookup_gea and full caveats.",
+          },
+        ],
+      });
+      return producePathway();
+    }
 
     if (finalCall) {
       // The loop model decided to conclude — the verdict itself is written by

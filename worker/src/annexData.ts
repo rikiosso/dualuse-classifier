@@ -17,6 +17,12 @@ export interface AnnexDoc {
   verbatim_text: string;
 }
 
+export interface Gea {
+  id: string; // EU001..EU008
+  title: string;
+  verbatim_text: string;
+}
+
 export interface AnnexDataset {
   corpus_version: string;
   celex: string;
@@ -27,6 +33,8 @@ export interface AnnexDataset {
   index: { code: string; first_line: string }[];
   entries: AnnexEntry[];
   docs: AnnexDoc[];
+  geas?: Gea[];
+  gea_common_list?: string | null;
 }
 
 const TTL_MS = 30 * 60 * 1000;
@@ -122,4 +130,15 @@ export function provisionText(entry: AnnexEntry, dottedPath: string): string | n
     if (token === path || token.startsWith(path + ".")) block.push(line);
   }
   return block.length ? block.join("\n") : null;
+}
+
+export function geaById(annex: AnnexDataset, id: string): Gea | undefined {
+  return (annex.geas ?? []).find((g) => g.id === id.toUpperCase().trim());
+}
+
+// Text a pathway condition may quote from: the named GEA, or the Annex II
+// common excluded-items list (cited as COMMON_LIST).
+export function geaScopeText(annex: AnnexDataset, id: string): string | null {
+  if (id.toUpperCase().trim() === "COMMON_LIST") return annex.gea_common_list ?? null;
+  return geaById(annex, id)?.verbatim_text ?? null;
 }

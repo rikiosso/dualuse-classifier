@@ -85,3 +85,64 @@ export interface Verdict {
   caveats: string[];
   definitions_used: string[];
 }
+
+export const LOOKUP_GEA_TOOL = {
+  name: "lookup_gea",
+  description:
+    "Retrieve the FULL verbatim text of Union General Export Authorisations from " +
+    "Annex II by id, e.g. ['EU001']. Use 'COMMON_LIST' for the Annex II section I " +
+    "common excluded-items list (referenced by EU001/EU003/EU004/EU007). Call this " +
+    "before reasoning about any licensing pathway — never rely on memory.",
+  input_schema: {
+    type: "object",
+    properties: {
+      ids: { type: "array", items: { type: "string" }, description: "EU001..EU008 or COMMON_LIST" },
+    },
+    required: ["ids"],
+    additionalProperties: false,
+  },
+} as const;
+
+export const LICENSE_PATHWAY_TOOL = {
+  name: "license_pathway",
+  description:
+    "Deliver the licensing-pathway determination for an already-classified LISTED " +
+    "item. Call ONLY after destination and end-use are established. Every " +
+    "verbatim_quote must be copied exactly from lookup_gea output.",
+  strict: true,
+  input_schema: {
+    type: "object",
+    properties: {
+      destination: { type: "string" },
+      eligible_gea: { type: "string", description: "EU001..EU008, or empty string if none applies" },
+      outcome: {
+        type: "string",
+        enum: ["gea_available", "individual_licence_required", "sanctions_review_required"],
+      },
+      conditions_quoted: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            gea_id: { type: "string", description: "EU001..EU008 or COMMON_LIST" },
+            verbatim_quote: { type: "string" },
+            explanation: { type: "string" },
+          },
+          required: ["gea_id", "verbatim_quote", "explanation"],
+          additionalProperties: false,
+        },
+      },
+      caveats: { type: "array", items: { type: "string" } },
+    },
+    required: ["destination", "eligible_gea", "outcome", "conditions_quoted", "caveats"],
+    additionalProperties: false,
+  },
+} as const;
+
+export interface Pathway {
+  destination: string;
+  eligible_gea: string;
+  outcome: "gea_available" | "individual_licence_required" | "sanctions_review_required";
+  conditions_quoted: { gea_id: string; verbatim_quote: string; explanation: string }[];
+  caveats: string[];
+}

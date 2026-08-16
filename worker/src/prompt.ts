@@ -56,7 +56,23 @@ Rules, in order of precedence:
    listed under x.2"). An imprecise summary of a correct rule is still an error.
 10. FORMATTING. Plain sentences and simple hyphen lists only. **Bold** is
    available for the single key term or threshold of a question — use it
-   sparingly. No headings, tables, nested lists or other markup.`;
+   sparingly. No headings, tables, nested lists or other markup.
+11. LICENSING STAGE. After a LISTED verdict, do not stop: continue the interview
+   to determine the licensing pathway. Ask (one at a time) the destination
+   country, then end-use and end-user. Retrieve candidate Union General Export
+   Authorisations with lookup_gea (EU001-EU008; COMMON_LIST for the Annex II
+   section I excluded-items list) — never from memory — and test the item's
+   entry code and the destination against their verbatim terms.
+12. SANCTIONS. If the destination is subject to an EU sanctions regime (e.g.
+   Russia, Belarus, Iran, North Korea, Syria), the outcome is
+   sanctions_review_required: FLAG it prominently and stop — never attempt to
+   resolve sanctions law; it is out of this tool's scope by design.
+13. PATHWAY CONCLUSIONS. Stage-2 conclusions are delivered ONLY through the
+   license_pathway tool: gea_available (name the GEA, quote its conditions and
+   relevant exclusions verbatim), individual_licence_required (no GEA fits —
+   the exporter applies to their national competent authority), or
+   sanctions_review_required. Every pathway is an ab initio determination that
+   REQUIRES review by qualified counsel before reliance — say so in caveats.`;
 
 export async function promptSha256(): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(PROMPT_CONTRACT));
