@@ -54,6 +54,18 @@ flowchart LR
    of these is rejected by code and the assistant keeps asking questions instead. No
    unverifiable classification ever ships.
 
+## Stage 2 — the licensing pathway
+
+A classification is only half the journey. After a **Listed** verdict, the assistant keeps
+going: it asks for the destination and end-use, retrieves the **EU General Export
+Authorisations** (EU001–EU008, Annex II of the same Regulation — also auto-updated by the
+watcher) and determines the pathway: **GEA available** (conditions quoted verbatim),
+**individual authorisation required** (quoting the provision that rules the GEAs out), or —
+for destinations under an EU sanctions regime — **sanctions review required**, which the tool
+flags loudly and refuses to resolve: sanctions law is out of scope by design, and the server
+rejects any pathway that would green-light a sanctioned destination. Every pathway is an
+ab initio draft determination that **requires review by qualified counsel** before reliance.
+
 ## Cost design (why a public LLM demo doesn't bankrupt anyone)
 
 Two layers, doing different jobs:

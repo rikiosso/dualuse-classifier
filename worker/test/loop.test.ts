@@ -491,3 +491,24 @@ describe("pathway validation hardening", () => {
     expect(validatePathway(grounded as never, ANNEXG)).toEqual([]);
   });
 });
+
+describe("history trimming", () => {
+  it("oversized old tool_results are trimmed instead of failing the conversation", () => {
+    const big = "X".repeat(30000);
+    const msgs = [
+      { role: "user", content: "start" },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "lookup_entries", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: big }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "lookup_gea", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t2", content: big }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "t3", name: "lookup_gea", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t3", content: big }] },
+      { role: "assistant", content: "Question?" },
+      { role: "user", content: "answer " + "y".repeat(100) },
+    ];
+    const out = sanitizeMessages(msgs, 10);
+    expect(JSON.stringify(out).length).toBeLessThan(80000);
+    const first = out[2].content as { content?: string }[];
+    expect(String(first[0].content)).toContain("[trimmed");
+  });
+});

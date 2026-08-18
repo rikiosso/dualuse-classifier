@@ -29,7 +29,7 @@ const VERDICT_MAX_TOKENS = 4000;
 const MIN_QUOTE_CHARS = 12;
 // Hard cap on client-supplied history, so a single POST's token cost is bounded
 // well under the daily budget (was 200k — a ~50k-token inflation vector).
-const MAX_HISTORY_CHARS = 24_000;
+const MAX_HISTORY_CHARS = 80_000;
 
 export interface Models {
   loop: string;
@@ -58,11 +58,23 @@ export class InvalidRequest extends Error {}
 
 // Strip anything the client should not be able to smuggle in: cache_control,
 // unknown roles, unknown block types, oversized histories.
+// Old corpus lookups dominate transcript size; the model can always re-fetch.
+// Trim tool_result contents outside the last few messages instead of failing.
+function trimOldToolResults(msgs: Msg[]): void {
+  const keepTail = 6;
+  for (let i = 0; i < Math.max(0, msgs.length - keepTail); i++) {
+    const m = msgs[i];
+    if (m.role !== "user" || !Array.isArray(m.content)) continue;
+    for (const b of m.content) {
+      if (b.type === "tool_result" && typeof b.content === "string" && b.content.length > 400) {
+        b.content = b.content.slice(0, 200) + "\n…[trimmed — call the lookup tool again if needed]";
+      }
+    }
+  }
+}
+
 export function sanitizeMessages(raw: unknown, maxUserTurns: number): Msg[] {
   if (!Array.isArray(raw) || raw.length === 0) throw new InvalidRequest("messages required");
-  if (JSON.stringify(raw).length > MAX_HISTORY_CHARS) {
-    throw new InvalidRequest("conversation_too_long");
-  }
   const allowedBlocks = new Set(["text", "tool_use", "tool_result"]);
   const out: Msg[] = [];
   let userTurns = 0;
@@ -88,6 +100,10 @@ export function sanitizeMessages(raw: unknown, maxUserTurns: number): Msg[] {
   }
   if (out[0].role !== "user") throw new InvalidRequest("first message must be user");
   if (userTurns > maxUserTurns) throw new InvalidRequest("conversation_too_long");
+  if (JSON.stringify(out).length > MAX_HISTORY_CHARS) trimOldToolResults(out);
+  if (JSON.stringify(out).length > MAX_HISTORY_CHARS) {
+    throw new InvalidRequest("conversation_too_long");
+  }
   return out;
 }
 
