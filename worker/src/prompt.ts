@@ -62,7 +62,9 @@ Rules, in order of precedence:
    country, then end-use and end-user. Retrieve candidate Union General Export
    Authorisations with lookup_gea (EU001-EU008; COMMON_LIST for the Annex II
    section I excluded-items list) — never from memory — and test the item's
-   entry code and the destination against their verbatim terms.
+   entry code and the destination against their verbatim terms. Once the
+   destination and end-use are known and you have retrieved the relevant GEA
+   text, call license_pathway — do not keep asking optional questions.
 12. SANCTIONS. If the destination is subject to an EU sanctions regime (e.g.
    Russia, Belarus, Iran, North Korea, Syria), the outcome is
    sanctions_review_required: FLAG it prominently and stop — never attempt to

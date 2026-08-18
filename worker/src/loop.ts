@@ -23,7 +23,7 @@ import { estimateUsd } from "./rateLimit";
 
 const MAX_TOOL_ITERATIONS = 3;
 const LOOP_MAX_TOKENS = 1200;
-const VERDICT_MAX_TOKENS = 2500;
+const VERDICT_MAX_TOKENS = 4000;
 // Quotes shorter than this are too weak to anchor — a 3-char fragment appears
 // everywhere. Real thresholds and provisions comfortably clear it.
 const MIN_QUOTE_CHARS = 12;
@@ -155,13 +155,21 @@ export function validatePathway(pw: Pathway, annex: AnnexDataset): string[] {
       `destination "${pw.destination}" is under an EU sanctions regime — outcome must be sanctions_review_required`,
     );
   }
+  // eligible_gea is either empty or a REAL GEA id — for every outcome (a live
+  // run emitted garbage into this field under an individual_licence outcome)
+  if (pw.eligible_gea && !geaById(annex, pw.eligible_gea)) {
+    problems.push(`eligible_gea ${JSON.stringify(pw.eligible_gea).slice(0, 60)} does not exist in the corpus`);
+  }
   if (pw.outcome === "gea_available") {
-    if (!pw.eligible_gea || !geaById(annex, pw.eligible_gea)) {
-      problems.push(`eligible_gea ${pw.eligible_gea || "(empty)"} does not exist in the corpus`);
-    }
+    if (!pw.eligible_gea) problems.push("gea_available requires eligible_gea");
     if (pw.conditions_quoted.length === 0) {
       problems.push("gea_available requires quoted conditions");
     }
+  }
+  if (pw.outcome === "individual_licence_required" && pw.conditions_quoted.length === 0) {
+    problems.push(
+      "individual_licence_required must quote the provision that rules the GEAs out (e.g. the coverage clause or exclusion tested)",
+    );
   }
   for (const c of pw.conditions_quoted) {
     const scope = geaScopeText(annex, c.gea_id);
@@ -491,6 +499,28 @@ export async function runTurn(
     // ("Status: Listed ... 4A003.b") without calling final_answer — bypassing
     // corpus validation entirely. Conclusive-looking prose is never returned:
     // it is escalated into the validated verdict stage instead.
+    // stage-2 conclusive prose: "EU001 applies", "individual licence required",
+    // sanctions/embargo refusals — never returned as chat text, always the card
+    const pathwayConclusive =
+      (/\bEU00[1-8]\b/.test(text) && /(available|applies|eligible|covers|authoris)/i.test(text)) ||
+      /individual (export )?(licence|license|authorisation) (is |will be )?(required|needed)/i.test(text) ||
+      /\b(sanction|embargo)/i.test(text);
+    if (pathwayConclusive && realUserTurns > 1) {
+      transcript.push({
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text:
+              "[system] Licensing conclusions must be delivered ONLY through the " +
+              "license_pathway tool, never as prose. Call license_pathway now with the " +
+              "destination, outcome, exact verbatim quotes from lookup_gea and full caveats.",
+          },
+        ],
+      });
+      return producePathway();
+    }
+
     const conclusive =
       /(^|\n)\s*\*{0,2}(status|result|classification)\*{0,2}\s*:\s*\*{0,2}(listed|not[_ ]?listed|needs[_ ]?expert)/i.test(text) ||
       /\b(is|are)\s+(therefore\s+|clearly\s+|thus\s+)?(listed|not listed)\s+in\s+annex\s+i\b/i.test(text) ||

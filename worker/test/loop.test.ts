@@ -406,3 +406,88 @@ describe("licensing pathway (stage 2)", () => {
     expect(JSON.stringify(client.requests[1].tool_choice)).toContain("license_pathway");
   });
 });
+
+describe("pathway prose escalation", () => {
+  it("'EU001 applies' prose becomes a validated pathway card", async () => {
+    const ANNEX2b: typeof ANNEX = {
+      ...ANNEX,
+      geas: [{ id: "EU001", title: "EU001 — A.EXPORTS", verbatim_text: "1. Covers exports to the United States of America. 2. Registration is required within 30 days of first use." }],
+      gea_common_list: "Excluded: 0C001.",
+    };
+    const client = new CannedClaudeClient([
+      textResp("Good news — EU001 applies to your export to the United States."),
+      toolResp("license_pathway", {
+        destination: "United States",
+        eligible_gea: "EU001",
+        outcome: "gea_available",
+        conditions_quoted: [{ gea_id: "EU001", verbatim_quote: "Registration is required within 30 days", explanation: "condition" }],
+        caveats: ["Requires legal review."],
+      }),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX2b,
+      [
+        { role: "user", content: "listed item, 3B501" },
+        { role: "assistant", content: "Destination?" },
+        { role: "user", content: "United States" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("pathway");
+    expect(result.pathway?.outcome).toBe("gea_available");
+  });
+
+  it("sanctions prose becomes the sanctions card, never chat text", async () => {
+    const ANNEX2c: typeof ANNEX = { ...ANNEX, geas: [], gea_common_list: "x" };
+    const client = new CannedClaudeClient([
+      textResp("I cannot assist further: Russia is subject to a comprehensive EU sanctions regime."),
+      toolResp("license_pathway", {
+        destination: "Russia",
+        eligible_gea: "",
+        outcome: "sanctions_review_required",
+        conditions_quoted: [],
+        caveats: ["EU sanctions regimes apply — qualified counsel must review."],
+      }),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX2c,
+      [
+        { role: "user", content: "my listed drone" },
+        { role: "assistant", content: "Destination?" },
+        { role: "user", content: "Russia" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("pathway");
+    expect(result.pathway?.outcome).toBe("sanctions_review_required");
+  });
+});
+
+describe("pathway validation hardening", () => {
+  it("garbage eligible_gea is rejected for ANY outcome; ungrounded individual too", async () => {
+    const { validatePathway } = await import("../src/loop");
+    const ANNEXG: typeof ANNEX = { ...ANNEX, geas: [{ id: "EU001", title: "EU001 — A", verbatim_text: "Covers exports to the United States of America except Section I items." }], gea_common_list: "x" };
+    const garbage = {
+      destination: "United States",
+      eligible_gea: '</antml junk">individual',
+      outcome: "individual_licence_required",
+      conditions_quoted: [],
+      caveats: ["c"],
+    };
+    const problems = validatePathway(garbage as never, ANNEXG);
+    expect(problems.join(" ")).toContain("does not exist");
+    expect(problems.join(" ")).toContain("must quote the provision");
+    const grounded = {
+      destination: "United States",
+      eligible_gea: "",
+      outcome: "individual_licence_required",
+      conditions_quoted: [{ gea_id: "EU001", verbatim_quote: "except Section I items", explanation: "tested and failed" }],
+      caveats: ["c"],
+    };
+    expect(validatePathway(grounded as never, ANNEXG)).toEqual([]);
+  });
+});
