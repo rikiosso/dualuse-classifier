@@ -399,6 +399,7 @@ export async function runTurn(
     LICENSE_PATHWAY_TOOL,
   ];
   let usd = 0;
+  let nudgedBundle = false;
 
   const call = async (model: string, maxTokens: number, forced: false | string) => {
     const msgs = transcript.map((m, i) =>
@@ -653,6 +654,29 @@ export async function runTurn(
         ],
       });
       return producePathway();
+    }
+
+    // ONE-QUESTION DISCIPLINE, enforced once per turn: a live run bundled
+    // "scan or repeat?" (non-discriminating — the chapeau covers both) with
+    // "system or component?" AFTER every controlling parameter was given.
+    // A multi-question turn gets one chance to converge or ask one thing.
+    const questionMarks = (text.match(/\?/g) ?? []).length;
+    if (questionMarks >= 2 && !nudgedBundle) {
+      nudgedBundle = true;
+      transcript.push({
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text:
+              "[system] Ask exactly ONE question, phrased once — and only if its answer " +
+              "can change the classification. Never re-ask facts already given. If the " +
+              "user has already supplied every controlling parameter, conclude now " +
+              "(final_answer / license_pathway) instead of asking.",
+          },
+        ],
+      });
+      continue;
     }
 
     // A trimmed source is the model's cue to re-fetch, never a fact to

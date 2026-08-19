@@ -827,6 +827,29 @@ describe("trimmed lookup restoration", () => {
   });
 });
 
+describe("one-question discipline", () => {
+  it("a bundled multi-question turn is nudged once toward a single question", async () => {
+    const client = new CannedClaudeClient([
+      textResp("Is it a step-and-scan system? Also, is it a complete system or a component?"),
+      textResp("What is the maximum numerical aperture of the scanner?"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "my litho tool" }], MODELS, 10);
+    expect(result.type).toBe("question");
+    expect(result.text).toContain("numerical aperture");
+    expect(result.text).not.toContain("Also");
+  });
+
+  it("the nudge fires only once — a second multi-question turn is surfaced", async () => {
+    const client = new CannedClaudeClient([
+      textResp("Is it A? Or is it B?"),
+      textResp("Is it C? Or is it D?"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "my tool" }], MODELS, 10);
+    expect(result.type).toBe("question");
+    expect(result.text).toContain("C");
+  });
+});
+
 describe("history trimming", () => {
   it("oversized old tool_results are trimmed instead of failing the conversation", () => {
     const big = "X".repeat(30000);
