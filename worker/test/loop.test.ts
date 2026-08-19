@@ -827,6 +827,138 @@ describe("trimmed lookup restoration", () => {
   });
 });
 
+describe("naked-verdict escalation — 'meets all criteria' prose", () => {
+  it("prose declaring all sub-criteria met escalates into the verdict stage", async () => {
+    const client = new CannedClaudeClient([
+      textResp(
+        "Your scanner meets **all three** sub-criteria of **3B501.f.1.b**:\n1. ✓ 193 nm\n2. ✓ MRF 35.7 nm\n3. ✓ 1.2 nm overlay\nNow I'll confirm the classification. What is the destination country?",
+      ),
+      toolResp("final_answer", GOOD_VERDICT, "tu_v9"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "my litho scanner, all specs given" }], MODELS, 10);
+    expect(result.type).toBe("verdict");
+    expect(result.verdict?.entry_codes).toEqual(["3B501"]);
+  });
+});
+
+describe("tool-budget decision iteration and ask-fallback escalation", () => {
+  const ANNEXP: typeof ANNEX = {
+    ...ANNEX,
+    geas: [
+      {
+        id: "EU001",
+        title: "EU001 — A.EXPORTS",
+        verbatim_text:
+          "1. This authorisation covers exports to the United States of America.\n2. Registration with the competent authority is required within 30 days of first use.",
+      },
+    ],
+    gea_common_list: "x",
+  };
+  const GOOD = {
+    destination: "United States",
+    eligible_gea: "EU001",
+    outcome: "gea_available",
+    conditions_quoted: [
+      {
+        gea_id: "EU001",
+        verbatim_quote: "Registration with the competent authority is required within 30 days",
+        explanation: "condition",
+      },
+    ],
+    caveats: ["Requires legal review."],
+  };
+  const BAD = { ...GOOD, conditions_quoted: [{ gea_id: "EU001", verbatim_quote: "totally invented text here", explanation: "x" }] };
+  const lookup = (id: string) => toolResp("lookup_gea", { ids: ["EU001"] }, id);
+
+  it("after the lookup budget, the decision iteration can still conclude via the tools", async () => {
+    const client = new CannedClaudeClient([
+      lookup("tu_l1"),
+      lookup("tu_l2"),
+      lookup("tu_l3"), // budget spent — decision nudge injected next
+      toolResp("license_pathway", GOOD, "tu_d1"), // loop model concludes
+      toolResp("license_pathway", GOOD, "tu_d2"), // forced authoritative stage
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEXP,
+      [
+        { role: "user", content: "my listed 3B501 item" },
+        { role: "assistant", content: "Destination?" },
+        { role: "user", content: "United States, civil fab, no adverse awareness" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("pathway");
+    expect(result.pathway?.eligible_gea).toBe("EU001");
+  });
+
+  it("conclusive prose from the fail-closed ask is escalated into the card, never shipped", async () => {
+    const client = new CannedClaudeClient([
+      toolResp("license_pathway", BAD, "tu_p1"), // draft routes to forced stage
+      toolResp("license_pathway", BAD, "tu_p2"), // attempt 1: rejected
+      toolResp("license_pathway", BAD, "tu_p3"), // attempt 2: rejected → fail-closed ask
+      textResp("EU001 clearly covers your export to the United States."), // conclusive prose
+      toolResp("license_pathway", GOOD, "tu_p4"), // escalated forced attempt succeeds
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEXP,
+      [
+        { role: "user", content: "my listed 3B501 item" },
+        { role: "assistant", content: "Destination?" },
+        { role: "user", content: "United States, civil fab" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("pathway");
+    expect(result.pathway?.outcome).toBe("gea_available");
+  });
+});
+
+describe("stage-2 convergence", () => {
+  it("after a verdict and three answered turns, a fourth question is overridden by the pathway tool", async () => {
+    const ANNEXP: typeof ANNEX = {
+      ...ANNEX,
+      geas: [{ id: "EU001", title: "EU001 — A", verbatim_text: "1. Covers exports to the United States of America. 2. Registration is required within 30 days of first use." }],
+      gea_common_list: "x",
+    };
+    const good = {
+      destination: "United States",
+      eligible_gea: "EU001",
+      outcome: "gea_available",
+      conditions_quoted: [{ gea_id: "EU001", verbatim_quote: "Registration is required within 30 days", explanation: "condition" }],
+      caveats: ["Requires legal review."],
+    };
+    const client = new CannedClaudeClient([
+      textResp("One more thing: will the equipment be operated by the end-user itself?"),
+      toolResp("license_pathway", good, "tu_s2"),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEXP,
+      [
+        { role: "user", content: "my litho scanner, full specs" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "tu_v1", name: "final_answer", input: GOOD_VERDICT }],
+        },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_v1", content: "Verdict recorded." }] },
+        { role: "user", content: "Destination: United States, civil fab, commercial production, no adverse awareness." },
+        { role: "assistant", content: "Any custom software or assistance?" },
+        { role: "user", content: "Standard vendor software only, no assistance." },
+        { role: "assistant", content: "Complete system?" },
+        { role: "user", content: "Yes, complete standalone system." },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("pathway");
+    expect(result.pathway?.eligible_gea).toBe("EU001");
+  });
+});
+
 describe("one-question discipline", () => {
   it("a bundled multi-question turn is nudged once toward a single question", async () => {
     const client = new CannedClaudeClient([

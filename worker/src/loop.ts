@@ -369,6 +369,41 @@ export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
   return problems;
 }
 
+// Conclusive-prose detectors, shared by the main loop and the ask-fallback:
+// conclusions must reach the user ONLY as validated cards, never as chat text.
+function looksPathwayConclusive(text: string): boolean {
+  return (
+    (/\bEU00[1-8]\b/.test(text) && /(available|applies|eligible|covers|authoris)/i.test(text)) ||
+    /individual (export )?(licence|license|authorisation) (is |will be )?(required|needed)/i.test(text) ||
+    /\b(sanction|embargo)/i.test(text)
+  );
+}
+
+function looksVerdictConclusive(text: string): boolean {
+  return (
+    /(^|\n)\s*\*{0,2}(status|result|classification)\*{0,2}\s*:\s*\*{0,2}(listed|not[_ ]?listed|needs[_ ]?expert)/i.test(text) ||
+    /\b(is|are)\s+(therefore\s+|clearly\s+|thus\s+)?(listed|not listed)\s+in\s+annex\s+i\b/i.test(text) ||
+    /classification result/i.test(text) ||
+    // live gap: "meets all three sub-criteria of 3B501.f.1.b" as prose, then
+    // straight to the destination question — the verdict card never shipped
+    (/\b(meets?|satisf(?:y|ies)|fulfil?s?)\b[^.\n]{0,60}\b(all|every|each|both)\b[^.\n]{0,60}\b(criteri|sub-criteri|conditions)/i.test(text) &&
+      /\b\d[A-E]\d{3}\b/.test(text))
+  );
+}
+
+const PATHWAY_TOOL_NUDGE =
+  "[system] Licensing conclusions must be delivered ONLY through the " +
+  "license_pathway tool, never as prose. Call license_pathway now with the " +
+  "destination, outcome, exact verbatim quotes from lookup_gea and full caveats.";
+const VERDICT_TOOL_NUDGE =
+  "[system] Conclusions must be delivered ONLY through the final_answer tool, " +
+  "never as prose. Call final_answer now with complete reasoning, exact " +
+  "verbatim quotes and full caveats.";
+
+function sysMsg(text: string): Msg {
+  return { role: "user", content: [{ type: "text", text }] };
+}
+
 export async function runTurn(
   client: ClaudeClient,
   annex: AnnexDataset,
@@ -400,6 +435,7 @@ export async function runTurn(
   ];
   let usd = 0;
   let nudgedBundle = false;
+  let askEscalated = false;
 
   const call = async (model: string, maxTokens: number, forced: false | string) => {
     const msgs = transcript.map((m, i) =>
@@ -418,6 +454,9 @@ export async function runTurn(
   };
 
   // One question, no tools: guarantees a real, contentful interview turn.
+  // Even this fallback must not ship a conclusion as prose — a live run's
+  // tool-budget fallback declared "EU001 is clearly your pathway" as chat
+  // text. One escape hatch back into the forced, validated stages.
   const askOneQuestion = async (): Promise<TurnResult> => {
     const resp = await client.complete({
       model: models.loop,
@@ -430,8 +469,21 @@ export async function runTurn(
       tool_choice: { type: "none" },
     });
     usd += estimateUsd(models.loop, resp.usage);
+    const text = textOf(resp);
     transcript.push({ role: "assistant", content: resp.content as Block[] });
-    return { type: "question", text: textOf(resp), transcript, usd };
+    if (!askEscalated) {
+      if (looksPathwayConclusive(text) && realUserTurns > 1) {
+        askEscalated = true;
+        transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
+        return producePathway();
+      }
+      if (looksVerdictConclusive(text)) {
+        askEscalated = true;
+        transcript.push(sysMsg(VERDICT_TOOL_NUDGE));
+        return produceVerdict();
+      }
+    }
+    return { type: "question", text, transcript, usd };
   };
 
   // The verdict stage: forced strict final_answer on the stronger model, with
@@ -571,7 +623,20 @@ export async function runTurn(
     return askOneQuestion();
   };
 
-  for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+  // One extra "decision" iteration past the lookup budget: the model is told
+  // to conclude via the tools if the facts decide, or ask one question — a
+  // live run burned every iteration on GEA lookups and the ask-only fallback
+  // then had no way to conclude at all.
+  for (let i = 0; i <= MAX_TOOL_ITERATIONS; i++) {
+    if (i === MAX_TOOL_ITERATIONS) {
+      transcript.push(
+        sysMsg(
+          "[system] Stop looking things up. If the known facts already decide the " +
+            "outcome, call final_answer or license_pathway NOW; otherwise ask the " +
+            "user your single most important discriminating question.",
+        ),
+      );
+    }
     const resp = await call(models.loop, LOOP_MAX_TOKENS, false);
     const uses = toolUses(resp);
     const finalCall = uses.find((u) => u.name === "final_answer");
@@ -624,6 +689,7 @@ export async function runTurn(
           content: execLookup(annex, String(u.name), (u.input ?? {}) as Record<string, unknown>),
         })),
       });
+      if (i === MAX_TOOL_ITERATIONS) break; // budget truly spent — fall to the ask
       continue;
     }
 
@@ -634,25 +700,8 @@ export async function runTurn(
     // ("Status: Listed ... 4A003.b") without calling final_answer — bypassing
     // corpus validation entirely. Conclusive-looking prose is never returned:
     // it is escalated into the validated verdict stage instead.
-    // stage-2 conclusive prose: "EU001 applies", "individual licence required",
-    // sanctions/embargo refusals — never returned as chat text, always the card
-    const pathwayConclusive =
-      (/\bEU00[1-8]\b/.test(text) && /(available|applies|eligible|covers|authoris)/i.test(text)) ||
-      /individual (export )?(licence|license|authorisation) (is |will be )?(required|needed)/i.test(text) ||
-      /\b(sanction|embargo)/i.test(text);
-    if (pathwayConclusive && realUserTurns > 1) {
-      transcript.push({
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text:
-              "[system] Licensing conclusions must be delivered ONLY through the " +
-              "license_pathway tool, never as prose. Call license_pathway now with the " +
-              "destination, outcome, exact verbatim quotes from lookup_gea and full caveats.",
-          },
-        ],
-      });
+    if (looksPathwayConclusive(text) && realUserTurns > 1) {
+      transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
       return producePathway();
     }
 
@@ -720,24 +769,41 @@ export async function runTurn(
       continue;
     }
 
-    const conclusive =
-      /(^|\n)\s*\*{0,2}(status|result|classification)\*{0,2}\s*:\s*\*{0,2}(listed|not[_ ]?listed|needs[_ ]?expert)/i.test(text) ||
-      /\b(is|are)\s+(therefore\s+|clearly\s+|thus\s+)?(listed|not listed)\s+in\s+annex\s+i\b/i.test(text) ||
-      /classification result/i.test(text);
-    if (conclusive) {
-      transcript.push({
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text:
-              "[system] Conclusions must be delivered ONLY through the final_answer tool, " +
-              "never as prose. Call final_answer now with complete reasoning, exact " +
-              "verbatim quotes and full caveats.",
-          },
-        ],
-      });
+    if (looksVerdictConclusive(text)) {
+      transcript.push(sysMsg(VERDICT_TOOL_NUDGE));
       return produceVerdict();
+    }
+
+    // STAGE-2 CONVERGENCE: after a verdict, three answered turns carry the
+    // destination, end-use and end-user several times over — a live run still
+    // wanted a fourth optional question. Force the pathway tool instead; if
+    // facts truly are missing, validation fails closed to a question anyway.
+    let verdictAt = -1;
+    for (let t = 0; t < transcript.length; t++) {
+      const m = transcript[t];
+      if (
+        m.role === "assistant" &&
+        Array.isArray(m.content) &&
+        m.content.some((b) => b.type === "tool_use" && b.name === "final_answer")
+      ) {
+        verdictAt = t;
+      }
+    }
+    if (verdictAt >= 0) {
+      const answersSince = transcript.filter(
+        (m, t) =>
+          t > verdictAt &&
+          m.role === "user" &&
+          Array.isArray(m.content) &&
+          m.content.some(
+            (b) =>
+              b.type === "text" && !String((b as { text?: string }).text ?? "").startsWith("[system]"),
+          ),
+      ).length;
+      if (answersSince >= 3) {
+        transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
+        return producePathway();
+      }
     }
 
     return { type: "question", text, transcript, usd };
