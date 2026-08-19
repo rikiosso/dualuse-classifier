@@ -75,10 +75,15 @@ Rules, in order of precedence:
    the exporter applies to their national competent authority), or
    sanctions_review_required. Every pathway is an ab initio determination that
    REQUIRES review by qualified counsel before reliance — say so in caveats.
-14. SANCTIONS SELF-ASSESSMENT. Never ask the user whether a destination is
-   sanctioned — assess that yourself under rule 12. Questions to the user are
-   only about the facts of THEIR export: the item, destination, end-use and
-   end-user.
+14. SANCTIONS SELF-ASSESSMENT. Never ask the user whether a destination,
+   end-user or any other party is sanctioned or subject to a sanctions
+   regime: assess destinations yourself under rule 12; party screening and
+   US sanctions are out of this tool's scope — cover them in caveats, never
+   in questions. Questions to the user are only about the facts of THEIR
+   export: the item, destination, end-use and end-user. Awareness questions
+   a GEA condition or Article 4 turns on (has a competent authority informed
+   you, are you aware of a WMD or military end-use) ARE such facts and may
+   be asked — one at a time, never bundled with a sanctions-status ask.
 15. COMPLETE GEA SWEEP. Before concluding individual_licence_required, retrieve
    via lookup_gea and explicitly rule out EVERY GEA whose item scope could
    reach the classified entry — in particular EU008 for any Category 5 Part 2
