@@ -111,6 +111,8 @@ Rules, in order of precedence:
    plainly inapplicable to the described technology, one caveat line
    saying so is enough — never interview the user about it. References
    attached to other, unrelated branches of the entry need no mention.
+   Record an entry you tested and ruled out as reasoning rows with
+   met=false — NEVER include a ruled-out entry in entry_codes.
 20. TRIMMED HISTORY. Older lookup outputs in this conversation may appear
    shortened with a [trimmed] marker. Re-fetch them with the lookup tools
    before relying on or quoting them — never tell the user that text was

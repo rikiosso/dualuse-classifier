@@ -209,7 +209,7 @@ describe("validateVerdict — hardened grounding", () => {
 
   it("rejects a headline entry_code with no backing reasoning", () => {
     const v = { ...GOOD_VERDICT, entry_codes: ["3B501", "4A003"] };
-    expect(validateVerdict(v, ANNEX).join(" ")).toContain("headlined but has no reasoning");
+    expect(validateVerdict(v, ANNEX).join(" ")).toContain("headlined but has no supporting reasoning");
   });
 
   it("rejects a too-short quote", () => {
@@ -672,6 +672,38 @@ describe("cross-reference guard (N.B. / SEE ALSO)", () => {
       ],
     };
     expect(validateVerdict(engaged as never, ANNEXX)).toEqual([]);
+  });
+
+  it("a ruled-out entry is engaged via met=false rows, never headlined (live regression)", async () => {
+    const { validateVerdict } = await import("../src/loop");
+    const both = {
+      status: "listed",
+      entry_codes: ["3B001", "3B501"],
+      reasoning: [
+        {
+          entry_code: "3B001",
+          dotted_path: "3B001.f.1.b",
+          verbatim_quote:
+            "Capable of producing a pattern with a 'Minimum Resolvable Feature size' (MRF) of 45 nm or less;",
+          explanation: "MRF under 3B001's K=0.35 formula is 50.04 nm — NOT met.",
+          met: false,
+        },
+        {
+          entry_code: "3B501",
+          dotted_path: "3B501.f.1.b.1",
+          verbatim_quote: "A light source wavelength equal to or longer than 193 nm;",
+          explanation: "193 nm satisfies 'equal to or longer than'.",
+          met: true,
+        },
+      ],
+      caveats: ["c"],
+      definitions_used: [],
+    };
+    // live regression: the old symmetric checks forced the headline "3B001, 3B501"
+    expect(validateVerdict(both as never, ANNEXX).join(" ")).toContain("no supporting reasoning");
+    // correct form: rule-out rows engage the cross-reference AND stay out of the headline
+    const fixed = { ...both, entry_codes: ["3B501"] };
+    expect(validateVerdict(fixed as never, ANNEXX)).toEqual([]);
   });
 
   it("N.B. lines outside the cited subtree, and refs to entries not in the corpus, are ignored", async () => {

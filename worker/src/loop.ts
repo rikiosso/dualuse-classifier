@@ -280,25 +280,35 @@ export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
   const problems: string[] = [];
   if (v.caveats.length === 0) problems.push("caveats must not be empty");
 
-  const reasoningCodes = new Set(v.reasoning.map((r) => (r.entry_code || "").toUpperCase()));
+  // Reasoning rows carry a met flag: met=false rows are rule-outs (an entry
+  // or cross-reference tested and found NOT to apply). A headline needs at
+  // least one SUPPORTING row, and rule-out rows are exempt from the headline
+  // requirement — the old symmetric checks (every headline backed by any row,
+  // every cited code headlined) forced a live verdict to headline "3B001,
+  // 3B501" while its own reasoning ruled 3B001 out.
+  const headlined = v.entry_codes.map((c) => c.toUpperCase());
   if (v.status === "listed") {
     if (v.entry_codes.length === 0) problems.push("listed verdict needs entry_codes");
     if (v.reasoning.length === 0) problems.push("listed verdict needs reasoning");
-    // every headline code must be backed by a reasoning item, and vice versa —
-    // the UI headlines entry_codes, so an unbacked code is an unsupported claim
     for (const code of v.entry_codes) {
-      if (!reasoningCodes.has(code.toUpperCase())) {
-        problems.push(`entry_code ${code} is headlined but has no reasoning with a verbatim quote`);
+      const backed = v.reasoning.some(
+        (r) => (r.entry_code || "").toUpperCase() === code.toUpperCase() && r.met !== false,
+      );
+      if (!backed) {
+        problems.push(
+          `entry_code ${code} is headlined but has no supporting reasoning — an entry whose rows all rule it out (met=false) must be removed from entry_codes`,
+        );
+      }
+    }
+    for (const r of v.reasoning) {
+      const code = (r.entry_code || "").toUpperCase();
+      if (r.met !== false && !headlined.includes(code)) {
+        problems.push(`reasoning cites ${code} as met but it is not in entry_codes`);
       }
     }
   }
   for (const code of v.entry_codes) {
     if (!entryByCode(annex, code)) problems.push(`entry_code ${code} does not exist in the corpus`);
-  }
-  for (const code of reasoningCodes) {
-    if (v.status === "listed" && !v.entry_codes.map((c) => c.toUpperCase()).includes(code)) {
-      problems.push(`reasoning cites ${code} which is not in entry_codes`);
-    }
   }
   for (const r of v.reasoning) {
     const entry = entryByCode(annex, r.entry_code);

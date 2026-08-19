@@ -60,8 +60,16 @@ export const FINAL_ANSWER_TOOL = {
             dotted_path: { type: "string" },
             verbatim_quote: { type: "string" },
             explanation: { type: "string" },
+            met: {
+              type: "boolean",
+              description:
+                "true if the facts SATISFY this provision and support listing under " +
+                "this entry; false for a rule-out row explaining why a tested entry " +
+                "or cross-reference does NOT apply. Ruled-out entries must not " +
+                "appear in entry_codes.",
+            },
           },
-          required: ["entry_code", "dotted_path", "verbatim_quote", "explanation"],
+          required: ["entry_code", "dotted_path", "verbatim_quote", "explanation", "met"],
           additionalProperties: false,
         },
       },
@@ -81,6 +89,7 @@ export interface Verdict {
     dotted_path: string;
     verbatim_quote: string;
     explanation: string;
+    met?: boolean; // absent on legacy transcripts — treated as supporting
   }[];
   caveats: string[];
   definitions_used: string[];
