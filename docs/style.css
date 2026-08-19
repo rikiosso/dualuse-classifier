@@ -107,8 +107,8 @@ main { width: 100%; max-width: 46rem; margin: 0 auto; padding: 0 1.25rem; flex: 
 /* ---------- banner (only shown when the assistant is unavailable) ---------- */
 .banner {
   max-width: 46rem; margin: 0 auto 1.25rem; padding: .8rem 1.1rem;
-  border: 1px solid var(--line); border-left: 3px solid var(--warn);
-  border-radius: 10px; background: var(--card); color: var(--steel);
+  border: 0; border-left: 3px solid var(--warn);
+  border-radius: 10px; background: var(--crystal); color: var(--suit);
   font-size: .95rem;
 }
 
@@ -119,8 +119,8 @@ main { width: 100%; max-width: 46rem; margin: 0 auto; padding: 0 1.25rem; flex: 
   padding: .65rem 1rem; border-radius: 14px; max-width: 92%;
   white-space: pre-wrap; overflow-wrap: break-word;
 }
-.msg.user { align-self: flex-end; background: var(--steel); color: var(--suit); border-radius: 14px 14px 4px 14px; }
-.msg.assistant { align-self: flex-start; background: var(--card); border: 1px solid var(--line); border-radius: 14px 14px 14px 4px; }
+.msg.user { align-self: flex-end; background: var(--card); border: 1px solid var(--line); color: var(--steel); border-radius: 14px 14px 4px 14px; }
+.msg.assistant { align-self: flex-start; background: var(--crystal); color: var(--suit); border-radius: 14px 14px 14px 4px; }
 .msg.thinking { align-self: flex-start; color: var(--steel-muted); font-style: italic; padding-left: .2rem; }
 
 #chat-form {
