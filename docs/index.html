@@ -4,49 +4,69 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EU Dual-Use Classifier</title>
-<meta name="description" content="Describe a technology and get a guided, cited triage against Annex I of EU dual-use Regulation 2021/821 — always the latest consolidated version; every quote in the final classification is checked verbatim against the corpus.">
+<meta name="description" content="Describe a technology and get it classified under Regulation (EU) 2021/821 — then see which export authorisation applies. Every quote verbatim, checked against the cited provision.">
 <meta property="og:type" content="website">
 <meta property="og:title" content="EU Dual-Use Classifier">
-<meta property="og:description" content="Describe a technology → guided classification against Annex I of Regulation (EU) 2021/821, latest consolidated version, with corpus-checked verbatim citations. Open source; dataset auto-updated every 6h.">
+<meta property="og:description" content="Describe a technology and get it classified under Regulation (EU) 2021/821 — then see which export authorisation applies. Verbatim, validated citations from the consolidated control list.">
 <meta property="og:url" content="https://rikiosso.github.io/dualuse-classifier/">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="EU Dual-Use Classifier">
-<meta name="twitter:description" content="Guided, cited triage against the EU dual-use control list — open source, always current.">
+<meta name="twitter:description" content="Describe a technology and get it classified under Regulation (EU) 2021/821 — then see which export authorisation applies.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧭</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400..700;1,8..60,400..700&display=swap">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header>
-  <h1>EU Dual-Use Classifier</h1>
-  <p class="tagline">Describe a technology — get a guided, cited triage against Annex I of
-  Regulation (EU) 2021/821, always in its latest consolidated version.</p>
-  <p class="disclaimer">⚠️ Indicative automated triage — <strong>not legal advice</strong>.
-  Catch-all controls (Articles 4 and 5) may apply regardless of listing. A licensing
-  authority or qualified counsel has the final word.</p>
-  <nav>
-    <button id="tab-chat" class="tab active">Assistant</button>
-    <button id="tab-browse" class="tab">Browse Annex I</button>
-  </nav>
-  <p id="status-line" class="meta"></p>
+
+<div class="topbar">
+  <span class="wordmark">EU Dual-Use Classifier</span>
+  <a class="topbar-byline" href="https://www.linkedin.com/in/ricardo-ossorio" target="_blank" rel="noopener">by Ricardo Álvarez-Ossorio Castro</a>
+</div>
+
+<header class="hero">
+  <h1>Describe a technology.<br>Get it classified under Regulation (EU)&nbsp;2021/821.</h1>
+  <p class="tagline">Then see which export authorisation applies — with every quote taken
+  verbatim from the control list and checked against the cited provision.</p>
 </header>
+
+<section class="features" aria-label="What it does">
+  <div class="feature">
+    <h2>Interview to verdict</h2>
+    <p>The assistant asks one technical question at a time and closes with a verdict citing the exact provisions.</p>
+  </div>
+  <div class="feature">
+    <h2>Licensing pathway</h2>
+    <p>Classification is half the answer — after a Listed result, it works out which EU export authorisation applies.</p>
+  </div>
+  <div class="feature">
+    <h2>Always current</h2>
+    <p>The control list updates automatically from the EU’s <a href="https://rikiosso.github.io/exports-watch/" target="_blank" rel="noopener">consolidated text</a>, so answers track the law as it stands.</p>
+  </div>
+</section>
+
+<nav aria-label="Mode">
+  <button id="tab-chat" class="tab active">Assistant</button>
+  <button id="tab-browse" class="tab">Browse Annex I</button>
+</nav>
 
 <div id="budget-banner" class="banner hidden" role="alert"></div>
 
 <main>
   <section id="panel-chat">
     <div id="messages" aria-live="polite"></div>
-    <div id="examples">
-      <span class="meta">Try:</span>
-      <button class="chip" type="button">A photolithography stepper with a 193 nm ArF light source for 300 mm wafers</button>
-      <button class="chip" type="button">A GPU server cluster for training large AI models</button>
-      <button class="chip" type="button">A consumer drone with a 40 km control link and 8 kg payload</button>
-      <button class="chip" type="button">Standard e-commerce web software with TLS encryption</button>
-    </div>
     <form id="chat-form">
       <textarea id="chat-input" rows="3" required
         placeholder="Describe the technology — components, performance figures, materials, intended use…"></textarea>
       <button id="send" type="submit">Send</button>
     </form>
+    <div id="examples">
+      <button class="chip" type="button" data-prompt="A photolithography stepper with a 193 nm ArF light source for 300 mm wafers">Photolithography stepper</button>
+      <button class="chip" type="button" data-prompt="A GPU server cluster for training large AI models">AI training cluster</button>
+      <button class="chip" type="button" data-prompt="A consumer drone with a 40 km control link and 8 kg payload">Long-range drone</button>
+      <button class="chip" type="button" data-prompt="Standard e-commerce web software with TLS encryption">Everyday web software</button>
+    </div>
   </section>
 
   <section id="panel-browse" class="hidden">
@@ -57,10 +77,7 @@
 </main>
 
 <footer>
-  <p>Open source (<a href="https://github.com/rikiosso/dualuse-classifier">GitHub</a>) ·
-  dataset auto-updated by <a href="https://rikiosso.github.io/exports-watch/">Export Controls Watch</a> ·
-  Annex I text © European Union, <a href="https://eur-lex.europa.eu/">EUR-Lex</a>
-  (reuse per Decision 2011/833/EU); only the Official Journal is authentic.</p>
+  <p>Indicative triage, not legal advice · Annex I text © European Union, <a href="https://eur-lex.europa.eu/">EUR-Lex</a> — unofficial consolidated text · <a href="https://github.com/rikiosso/dualuse-classifier">Open source</a> · Built by <a href="https://www.linkedin.com/in/ricardo-ossorio" target="_blank" rel="noopener">Ricardo Álvarez-Ossorio Castro</a></p>
 </footer>
 
 <script src="config.js"></script>

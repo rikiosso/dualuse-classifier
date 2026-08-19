@@ -27,34 +27,25 @@
   tabs.chat.addEventListener("click", () => showTab("chat"));
   tabs.browse.addEventListener("click", () => showTab("browse"));
 
-  // ---------- health / status line ----------
-  const statusEl = $("status-line");
+  // ---------- health check ----------
+  // Nothing is shown while the assistant is available; the only status the
+  // page ever surfaces is the offline banner when the daily budget is spent.
+  const OFFLINE_MESSAGE =
+    "The assistant is at today's limit and will be back tomorrow — Browse mode " +
+    "still searches the full Annex I, free and instant.";
   async function refreshStatus() {
-    if (!workerReady) {
-      statusEl.textContent = "Assistant backend not deployed yet — Browse mode is fully available.";
-      return;
-    }
+    if (!workerReady) return;
     try {
       const resp = await fetch(cfg.WORKER_URL.replace(/\/$/, "") + "/api/health");
       const h = await resp.json();
-      const corpus = h.corpus
-        ? "corpus " + h.corpus.corpus_version + (h.corpus.valid_from ? " · in force since " + h.corpus.valid_from : "")
-        : "";
-      if (h.assistant_available) {
-        statusEl.textContent = "● Assistant online · " + corpus;
-      } else {
-        statusEl.textContent = "○ Assistant resting (daily demo budget spent) · " + corpus;
-        showBudgetBanner(
-          "⏸️ The AI assistant has used up today's demo budget and is resting until tomorrow (UTC). " +
-            "This is the cost cap working as designed — Browse Annex I below is fully available and free.",
-          false,
-        );
+      if (!h.assistant_available) {
+        showBudgetBanner(OFFLINE_MESSAGE, false);
         input.disabled = true;
-        input.placeholder = "The assistant is resting until tomorrow — Browse mode works fully.";
+        input.placeholder = "The assistant is back tomorrow — Browse mode works fully.";
         sendBtn.disabled = true;
       }
     } catch {
-      statusEl.textContent = "";
+      // health unavailable — stay silent; a failed chat POST reports itself
     }
   }
   refreshStatus();
@@ -70,7 +61,7 @@
 
   for (const chip of examplesEl.querySelectorAll(".chip")) {
     chip.addEventListener("click", () => {
-      input.value = chip.textContent;
+      input.value = chip.dataset.prompt || chip.textContent;
       input.focus();
     });
   }
@@ -272,14 +263,15 @@
 
     const review = document.createElement("p");
     review.className = "review-cta";
-    review.appendChild(document.createTextNode("This is a draft determination — "));
+    review.appendChild(
+      document.createTextNode("This pathway is a draft determination — have it confirmed by the lawyer who built this tool. "),
+    );
     const a = document.createElement("a");
     a.href = "https://www.linkedin.com/in/ricardo-ossorio";
     a.target = "_blank";
     a.rel = "noopener";
-    a.textContent = "request legal review";
+    a.textContent = "Request legal review →";
     review.appendChild(a);
-    review.appendChild(document.createTextNode(" before relying on it."));
     card.appendChild(review);
 
     messagesEl.appendChild(card);
@@ -332,10 +324,7 @@
       } else {
         const reason = data.reason || "unknown";
         if (reason === "daily_budget_exhausted") {
-          showBudgetBanner(
-            "The AI assistant has used up today's demo budget. Meanwhile you can search Annex I directly in Browse mode — the assistant is back tomorrow.",
-            true,
-          );
+          showBudgetBanner(OFFLINE_MESSAGE, true);
         } else if (reason === "rate_limited") {
           showBudgetBanner("You've reached today's per-visitor conversation limit — Browse mode stays fully available.", true);
         } else if (reason === "conversation_too_long") {
