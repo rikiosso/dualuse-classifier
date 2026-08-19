@@ -15,36 +15,28 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧭</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400..700;1,8..60,400..700&display=swap">
-<link rel="stylesheet" href="style.css?v=2">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Tenor+Sans&family=Arimo:ital,wght@0,400;0,700;1,400&display=swap">
+<link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
 
 <div class="topbar">
-  <span class="wordmark">EU Dual-Use Classifier</span>
+  <img class="mark" src="osso-mark.png" alt="" onerror="this.style.display='none'">
   <a class="topbar-byline" href="https://www.linkedin.com/in/ricardo-ossorio" target="_blank" rel="noopener">by Ricardo Álvarez-Ossorio Castro</a>
 </div>
 
 <header class="hero">
-  <h1>Describe a technology.<br>Get it classified under Regulation (EU)&nbsp;2021/821.</h1>
-  <p class="tagline">Then see which export authorisation applies — with every quote taken
-  verbatim from the control list and checked against the cited provision.</p>
+  <h1>EU Dual-Use Classifier</h1>
 </header>
 
-<section class="features" aria-label="What it does">
-  <div class="feature">
-    <h2>Interview to verdict</h2>
-    <p>The assistant asks one technical question at a time and closes with a verdict citing the exact provisions.</p>
-  </div>
-  <div class="feature">
-    <h2>Licensing pathway</h2>
-    <p>Classification is half the answer — after a Listed result, it works out which EU export authorisation applies.</p>
-  </div>
-  <div class="feature">
-    <h2>Always current</h2>
-    <p>The control list updates automatically from the EU’s <a href="https://rikiosso.github.io/exports-watch/" target="_blank" rel="noopener">consolidated text</a>, so answers track the law as it stands.</p>
-  </div>
-</section>
+<ol class="steps" aria-label="How it works">
+  <li>Describe a technology.</li>
+  <li>Get it classified under Regulation (EU)&nbsp;2021/821.</li>
+  <li>See which export authorisation applies.</li>
+</ol>
+
+<p class="hero-note">Every quote is taken verbatim from the control list and checked
+against the cited provision.</p>
 
 <nav aria-label="Mode">
   <button id="tab-chat" class="tab active">Assistant</button>
@@ -77,10 +69,11 @@
 </main>
 
 <footer>
+  <p>Answers always follow the latest consolidated EU text — the control list is auto-updated by <a href="https://rikiosso.github.io/exports-watch/" target="_blank" rel="noopener">Export Controls Watch</a>.</p>
   <p>Indicative triage, not legal advice · Annex I text © European Union, <a href="https://eur-lex.europa.eu/">EUR-Lex</a> — unofficial consolidated text · <a href="https://github.com/rikiosso/dualuse-classifier">Open source</a> · Built by <a href="https://www.linkedin.com/in/ricardo-ossorio" target="_blank" rel="noopener">Ricardo Álvarez-Ossorio Castro</a></p>
 </footer>
 
-<script src="config.js?v=2"></script>
-<script src="app.js?v=2"></script>
+<script src="config.js?v=3"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>
