@@ -193,6 +193,33 @@ export function normalizePathway(pw: Pathway, annex: AnnexDataset): Pathway {
 // EU001/EU007, with EU008 never retrieved. Enforced in code, not prompt.
 const CAT5P2 = /^5[ADE]002/i;
 
+// trimOldToolResults shrinks old lookup outputs to keep long conversations
+// under the history cap, telling the model to re-fetch — but the FORCED
+// verdict/pathway stages pin tool_choice to the strict tool, so the model
+// CANNOT re-fetch there. Seen live (stage-2 EU008 run): the model told the
+// user its source text was truncated and would not classify fully. Before
+// forcing, re-execute every trimmed lookup and restore its full output.
+// (This can push one request past the history cap; correctness of quoted
+// sources outranks the marginal token cost.)
+function restoreTrimmedLookups(msgs: Msg[], annex: AnnexDataset): void {
+  const usesById = new Map<string, Block>();
+  for (const m of msgs) {
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    for (const b of m.content) if (b.type === "tool_use") usesById.set(String(b.id), b);
+  }
+  for (const m of msgs) {
+    if (m.role !== "user" || !Array.isArray(m.content)) continue;
+    for (const b of m.content) {
+      if (b.type !== "tool_result" || typeof b.content !== "string" || !b.content.includes("…[trimmed")) {
+        continue;
+      }
+      const use = usesById.get(String(b.tool_use_id));
+      if (!use || !String(use.name).startsWith("lookup_")) continue;
+      b.content = execLookup(annex, String(use.name), (use.input ?? {}) as Record<string, unknown>);
+    }
+  }
+}
+
 // Pathway validation — same discipline as verdicts: quotes verbatim-in-scope,
 // referenced GEAs must exist, sanctioned destinations MUST carry the sanctions
 // outcome (never a green light), a GEA outcome needs quoted conditions.
@@ -297,6 +324,38 @@ export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
       );
     }
   }
+  // N.B. / SEE ALSO cross-references carried by a cited provision (or an
+  // ancestor of it) name sibling entries that catch similar equipment on
+  // different criteria (3B001.f.1 ↔ 3B501.f: the same defined term with a
+  // different K factor plus an overlay criterion). A live first-turn verdict
+  // concluded on 3B001.f.1.b without ever testing 3B501 — prompt rules did
+  // not stop it, so it is enforced here: every referenced entry must appear
+  // somewhere in the verdict (entry_codes, reasoning or caveats), even if
+  // only to say why it does not apply.
+  if (v.status !== "needs_expert") {
+    const mentioned = JSON.stringify(v).toUpperCase();
+    const flagged = new Set<string>();
+    for (const r of v.reasoning) {
+      const entry = entryByCode(annex, r.entry_code);
+      if (!entry) continue;
+      const cited = (r.dotted_path || "").trim().toUpperCase();
+      for (const line of entry.verbatim_text.split("\n")) {
+        if (!/\bN\.B\.|SEE ALSO/i.test(line)) continue;
+        const linePath = (line.split(/\s+/)[0] ?? "").toUpperCase();
+        if (!linePath || !(cited === linePath || cited.startsWith(linePath + "."))) continue;
+        for (const code of line.toUpperCase().match(/\b\d[A-E]\d{3}\b/g) ?? []) {
+          if (code === r.entry_code.toUpperCase() || flagged.has(code)) continue;
+          if (!entryByCode(annex, code)) continue;
+          if (!mentioned.includes(code)) {
+            flagged.add(code);
+            problems.push(
+              `the cited provision ${r.dotted_path} carries a cross-reference (N.B./SEE ALSO) to ${code} — either include ${code} in the verdict or state in caveats why it does not apply or cannot be assessed on the known facts`,
+            );
+          }
+        }
+      }
+    }
+  }
   return problems;
 }
 
@@ -368,6 +427,7 @@ export async function runTurn(
   // one retry on validation failure; fail-closed to a question otherwise.
   const produceVerdict = async (): Promise<TurnResult> => {
     {
+      restoreTrimmedLookups(transcript, annex);
       for (let attempt = 0; attempt < 2; attempt++) {
         const vResp = await call(models.verdict, VERDICT_MAX_TOKENS, "final_answer");
         const vUse = toolUses(vResp).find((u) => u.name === "final_answer");
@@ -447,6 +507,7 @@ export async function runTurn(
   // Stage-2 twin of produceVerdict: forced strict license_pathway, validated,
   // one retry, fail-closed to a question.
   const producePathway = async (): Promise<TurnResult> => {
+    restoreTrimmedLookups(transcript, annex);
     for (let attempt = 0; attempt < 2; attempt++) {
       const pResp = await call(models.verdict, VERDICT_MAX_TOKENS, "license_pathway");
       const pUse = toolUses(pResp).find((u) => u.name === "license_pathway");
@@ -582,6 +643,47 @@ export async function runTurn(
         ],
       });
       return producePathway();
+    }
+
+    // A trimmed source is the model's cue to re-fetch, never a fact to
+    // report — a live stage-2 run told the user its text was truncated and
+    // declined to classify fully. Nudge it to re-fetch and continue.
+    if (/\btruncat|\[trimmed\b/i.test(text)) {
+      transcript.push({
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text:
+              "[system] Source text trimmed from this conversation must be re-fetched with " +
+              "the lookup tools — do that now and continue. Never mention truncation or " +
+              "trimming to the user.",
+          },
+        ],
+      });
+      continue;
+    }
+
+    // A turn that narrates an intended lookup ("Let me look that up now")
+    // without performing it — and asks the user nothing — is not a question.
+    // Seen live after a parameter answer: the model announced a lookup and
+    // ended its turn. Nudge it to act instead of surfacing the narration.
+    const lookupNarration =
+      !text.includes("?") &&
+      /\b(let me|i need to|i will|i'll|i am going to)\b[^.?!]{0,80}\b(look|retriev|fetch|consult|check)/i.test(text);
+    if (lookupNarration) {
+      transcript.push({
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text:
+              "[system] Do not narrate lookups — call the lookup tool now, then continue. " +
+              "Never end a turn with a statement of intent.",
+          },
+        ],
+      });
+      continue;
     }
 
     const conclusive =

@@ -96,7 +96,25 @@ Rules, in order of precedence:
    sub-item(s) the verdict's reasoning pinned (e.g. 5A002.a.1 vs a.2). If a
    GEA's item scope turns on a different or finer sub-item than the verdict
    established, never silently reassign the classification — ask the
-   discriminating question, or rule the GEA out on the verdict as recorded.`;
+   discriminating question, or rule the GEA out on the verdict as recorded.
+18. DEFINED TERMS. If a threshold uses a quantity a Technical Note defines
+   by formula (e.g. 'MRF'), never take the user's claimed value for it at
+   face value: apply the entry's OWN formula and constants (3B001.f.1.b and
+   3B501.f.1.b define 'MRF' with DIFFERENT K factors), and ask the user for
+   the missing input parameters (e.g. numerical aperture) instead of
+   concluding on the claimed value.
+19. CROSS-REFERENCES. Before concluding on a provision, address the N.B. /
+   SEE ALSO references attached to that provision, its ancestors or the
+   entry root (e.g. 3B001.f.1 N.B. SEE ALSO 3B501.f): if the referenced
+   entry could plausibly capture the described item, fetch and test it,
+   asking for a missing discriminating parameter if needed; if it is
+   plainly inapplicable to the described technology, one caveat line
+   saying so is enough — never interview the user about it. References
+   attached to other, unrelated branches of the entry need no mention.
+20. TRIMMED HISTORY. Older lookup outputs in this conversation may appear
+   shortened with a [trimmed] marker. Re-fetch them with the lookup tools
+   before relying on or quoting them — never tell the user that text was
+   truncated, trimmed or unavailable.`;
 
 export async function promptSha256(): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(PROMPT_CONTRACT));

@@ -624,6 +624,177 @@ describe("pathway validation hardening", () => {
   });
 });
 
+describe("cross-reference guard (N.B. / SEE ALSO)", () => {
+  const ANNEXX: typeof ANNEX = {
+    ...ANNEX,
+    entries: [
+      ...ANNEX.entries,
+      {
+        entry_code: "3B001",
+        category: "3",
+        verbatim_text:
+          "3B001 Semiconductor manufacturing equipment as follows:\n" +
+          "3B001.f.1 Align and expose step and scan equipment having any of the following:\n" +
+          "3B001.f.1.b Capable of producing a pattern with a 'Minimum Resolvable Feature size' (MRF) of 45 nm or less;\n" +
+          "3B001.f.1 N.B. SEE ALSO 3B501.f.\n" +
+          "3B001.h Multi-layer masks with a phase shift layer;\n" +
+          "3B001.h N.B. For masks specially designed for optical sensors, see 6B002.",
+        parameters: [],
+        applicable_notes: [],
+      },
+    ],
+  };
+  const mrfVerdict = {
+    status: "listed",
+    entry_codes: ["3B001"],
+    reasoning: [
+      {
+        entry_code: "3B001",
+        dotted_path: "3B001.f.1.b",
+        verbatim_quote:
+          "Capable of producing a pattern with a 'Minimum Resolvable Feature size' (MRF) of 45 nm or less;",
+        explanation: "Stated MRF of 38 nm meets the 45 nm threshold.",
+      },
+    ],
+    caveats: ["Indicative triage only."],
+    definitions_used: [],
+  };
+
+  it("a verdict citing a provision with SEE ALSO must engage the referenced entry", async () => {
+    const { validateVerdict } = await import("../src/loop");
+    // live regression: concluded 3B001.f.1.b on a stated MRF, never tested 3B501
+    expect(validateVerdict(mrfVerdict as never, ANNEXX).join(" ")).toContain("3B501");
+    const engaged = {
+      ...mrfVerdict,
+      caveats: [
+        "Indicative triage only.",
+        "3B501.f (cross-referenced) not assessed: its 'dedicated chuck overlay' criterion was not provided.",
+      ],
+    };
+    expect(validateVerdict(engaged as never, ANNEXX)).toEqual([]);
+  });
+
+  it("N.B. lines outside the cited subtree, and refs to entries not in the corpus, are ignored", async () => {
+    const { validateVerdict } = await import("../src/loop");
+    const maskVerdict = {
+      ...mrfVerdict,
+      reasoning: [
+        {
+          entry_code: "3B001",
+          dotted_path: "3B001.h",
+          verbatim_quote: "Multi-layer masks with a phase shift layer;",
+          explanation: "Phase-shift mask as described.",
+        },
+      ],
+    };
+    // 3B001.h's own N.B. points at 6B002 (not in corpus — ignored) and the
+    // SEE ALSO at 3B001.f.1 is not an ancestor of 3B001.h — no problems
+    expect(validateVerdict(maskVerdict as never, ANNEXX)).toEqual([]);
+  });
+});
+
+describe("lookup narration guard", () => {
+  it("a turn that only announces a lookup is nudged to act, not surfaced", async () => {
+    const client = new CannedClaudeClient([
+      textResp(
+        "I need to retrieve the exact verbatim text of the Technical Notes section for 3B501.f.1.b to ensure I quote it correctly. Let me look that up now.",
+      ),
+      textResp("What is the maximum numerical aperture (NA) of the scanner?"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "my litho tool, NA pending" }], MODELS, 10);
+    expect(result.type).toBe("question");
+    expect(result.text).toContain("numerical aperture");
+    const nudges = result.transcript.filter(
+      (m) =>
+        m.role === "user" &&
+        Array.isArray(m.content) &&
+        m.content.some((b) => String((b as { text?: string }).text ?? "").includes("Do not narrate lookups")),
+    );
+    expect(nudges.length).toBe(1);
+  });
+
+  it("a real question containing 'let me check' language still surfaces", async () => {
+    const client = new CannedClaudeClient([
+      textResp("Before I check the thresholds: what is the light source wavelength, in nm?"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "classify my laser tool" }], MODELS, 10);
+    expect(result.type).toBe("question");
+    expect(result.text).toContain("wavelength");
+  });
+});
+
+describe("trimmed lookup restoration", () => {
+  const ANNEXT: typeof ANNEX = {
+    ...ANNEX,
+    geas: [
+      {
+        id: "EU001",
+        title: "EU001 — A.EXPORTS",
+        verbatim_text:
+          "1. This authorisation covers exports to the United States of America.\n2. Registration with the competent authority is required within 30 days of first use.",
+      },
+    ],
+    gea_common_list: "x",
+  };
+  const TRIMMED = "=== EU001 ===\n1. This auth\n…[trimmed — call the lookup tool again if needed]";
+
+  it("forced pathway stage sees re-fetched full text for trimmed lookups", async () => {
+    const good = {
+      destination: "United States",
+      eligible_gea: "EU001",
+      outcome: "gea_available",
+      conditions_quoted: [
+        {
+          gea_id: "EU001",
+          verbatim_quote: "Registration with the competent authority is required within 30 days",
+          explanation: "condition",
+        },
+      ],
+      caveats: ["Requires legal review."],
+    };
+    const client = new CannedClaudeClient([
+      toolResp("license_pathway", good),
+      toolResp("license_pathway", good, "tu_p2"),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEXT,
+      [
+        { role: "user", content: "my listed 3B501 item" },
+        { role: "assistant", content: [{ type: "tool_use", id: "tu_g1", name: "lookup_gea", input: { ids: ["EU001"] } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_g1", content: TRIMMED }] },
+        { role: "assistant", content: "Destination?" },
+        { role: "user", content: "United States, civil customer" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("pathway");
+    // the forced call's payload must carry the restored full GEA text
+    const forcedPayload = JSON.stringify(client.requests[1].messages);
+    expect(forcedPayload).toContain("Registration with the competent authority is required within 30 days");
+    expect(forcedPayload).not.toContain("[trimmed");
+  });
+
+  it("truncation talk is never surfaced — the model is nudged to re-fetch", async () => {
+    const client = new CannedClaudeClient([
+      textResp("Unfortunately the EU008 text was truncated in my context, so I cannot fully classify this item."),
+      textResp("What is the destination country?"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "my listed item" }], MODELS, 10);
+    expect(result.type).toBe("question");
+    expect(result.text).toContain("destination country");
+    expect(result.text).not.toContain("truncated");
+    const nudged = result.transcript.some(
+      (m) =>
+        m.role === "user" &&
+        Array.isArray(m.content) &&
+        m.content.some((b) => String((b as { text?: string }).text ?? "").includes("re-fetched with")),
+    );
+    expect(nudged).toBe(true);
+  });
+});
+
 describe("history trimming", () => {
   it("oversized old tool_results are trimmed instead of failing the conversation", () => {
     const big = "X".repeat(30000);
