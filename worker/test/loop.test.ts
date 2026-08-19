@@ -490,6 +490,138 @@ describe("pathway validation hardening", () => {
     };
     expect(validatePathway(grounded as never, ANNEXG)).toEqual([]);
   });
+
+  it("a garbled eligible_gea on a non-GEA outcome is normalised, not rejected (live regression)", async () => {
+    const { normalizePathway, validatePathway } = await import("../src/loop");
+    const ANNEXG: typeof ANNEX = { ...ANNEX, geas: [{ id: "EU001", title: "EU001 — A", verbatim_text: "Covers exports to the United States of America except Section I items." }], gea_common_list: "x" };
+    // seen live: the model serialises an intended-empty eligible_gea as
+    // tool-syntax artifacts and reproduces the glitch on retry — rejection
+    // fail-closed a CORRECT sanctions outcome into prose
+    const garbled = {
+      destination: "Russia",
+      eligible_gea: '</antmlparameter>\n<parameter name="outcome">sanctions_review_required',
+      outcome: "sanctions_review_required",
+      conditions_quoted: [],
+      caveats: ["EU sanctions regimes apply — qualified counsel must review."],
+    };
+    const fixed = normalizePathway(garbled as never, ANNEXG);
+    expect(fixed.eligible_gea).toBe("");
+    expect(validatePathway(fixed, ANNEXG)).toEqual([]);
+    // gea_available keeps strict validation — a garbled headline id never ships
+    const headline = { ...garbled, outcome: "gea_available" };
+    expect(normalizePathway(headline as never, ANNEXG).eligible_gea).toBe(garbled.eligible_gea);
+  });
+
+  it("runTurn ships the sanctions card despite a garbled eligible_gea", async () => {
+    const ANNEXS: typeof ANNEX = { ...ANNEX, geas: [], gea_common_list: "x" };
+    const client = new CannedClaudeClient([
+      textResp("Russia is subject to a comprehensive EU sanctions regime."),
+      toolResp("license_pathway", {
+        destination: "Russia",
+        eligible_gea: '</antml_parameter>\n<parameter name="outcome">sanctions_review_required',
+        outcome: "sanctions_review_required",
+        conditions_quoted: [],
+        caveats: ["Sanctions review required — qualified counsel must review."],
+      }),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEXS,
+      [
+        { role: "user", content: "my listed 3B501 scanner" },
+        { role: "assistant", content: "Destination?" },
+        { role: "user", content: "Russia, civil fab customer" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("pathway");
+    expect(result.pathway?.outcome).toBe("sanctions_review_required");
+    expect(result.pathway?.eligible_gea).toBe("");
+  });
+
+  it("individual_licence_required for a Cat 5 Part 2 item must rule EU008 out", async () => {
+    const { validatePathway } = await import("../src/loop");
+    const ANNEX8: typeof ANNEX = {
+      ...ANNEX,
+      geas: [
+        { id: "EU001", title: "EU001 — A", verbatim_text: "Valid for exports to the United States of America." },
+        { id: "EU008", title: "EU008 — H.INFORMATION SECURITY", verbatim_text: "This authorisation covers information security items. Part 3: it does not apply where the end-user is a government of a listed destination." },
+      ],
+      gea_common_list: "x",
+    };
+    const noSweep = {
+      destination: "India",
+      eligible_gea: "",
+      outcome: "individual_licence_required",
+      conditions_quoted: [{ gea_id: "EU001", verbatim_quote: "Valid for exports to the United States of America.", explanation: "India is not an EU001 destination." }],
+      caveats: ["c"],
+    };
+    expect(validatePathway(noSweep as never, ANNEX8, ["5A002"]).join(" ")).toContain("EU008");
+    // same pathway is fine for a non-crypto item, or once EU008 is quoted
+    expect(validatePathway(noSweep as never, ANNEX8, ["3B501"])).toEqual([]);
+    const swept = {
+      ...noSweep,
+      conditions_quoted: [
+        ...noSweep.conditions_quoted,
+        { gea_id: "EU008", verbatim_quote: "it does not apply where the end-user is a government", explanation: "EU008 end-user clause tested." },
+      ],
+    };
+    expect(validatePathway(swept as never, ANNEX8, ["5A002"])).toEqual([]);
+    // an annex without EU008 (older corpus) cannot demand impossible quotes
+    const ANNEXno8: typeof ANNEX = { ...ANNEX8, geas: [ANNEX8.geas![0]] };
+    expect(validatePathway(noSweep as never, ANNEXno8, ["5A002"])).toEqual([]);
+  });
+
+  it("runTurn recovers the verdict's entry codes and enforces the EU008 sweep", async () => {
+    const ANNEX8: typeof ANNEX = {
+      ...ANNEX,
+      geas: [
+        { id: "EU001", title: "EU001 — A", verbatim_text: "Valid for exports to the United States of America." },
+        { id: "EU008", title: "EU008 — H.INFORMATION SECURITY", verbatim_text: "This authorisation covers information security items. Part 3: it does not apply where the end-user is a government of a listed destination." },
+      ],
+      gea_common_list: "x",
+    };
+    const noSweep = {
+      destination: "India",
+      eligible_gea: "",
+      outcome: "individual_licence_required",
+      conditions_quoted: [{ gea_id: "EU001", verbatim_quote: "Valid for exports to the United States of America.", explanation: "India not covered by EU001." }],
+      caveats: ["c"],
+    };
+    const swept = {
+      ...noSweep,
+      conditions_quoted: [
+        ...noSweep.conditions_quoted,
+        { gea_id: "EU008", verbatim_quote: "it does not apply where the end-user is a government", explanation: "EU008 tested and ruled out on the end-user clause." },
+      ],
+    };
+    const client = new CannedClaudeClient([
+      toolResp("license_pathway", noSweep),
+      toolResp("license_pathway", noSweep, "tu_p2"), // forced stage, attempt 1: rejected (no EU008)
+      toolResp("license_pathway", swept, "tu_p3"), // attempt 2 after the rejection feedback
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX8,
+      [
+        { role: "user", content: "my VPN appliance" },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Concluding." },
+            { type: "tool_use", id: "tu_v1", name: "final_answer", input: { ...GOOD_VERDICT, entry_codes: ["5A002"] } },
+          ],
+        },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_v1", content: "Verdict recorded." }] },
+        { role: "user", content: "Destination: India, private telecom operator." },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("pathway");
+    expect(result.pathway?.conditions_quoted.some((c) => c.gea_id === "EU008")).toBe(true);
+  });
 });
 
 describe("history trimming", () => {

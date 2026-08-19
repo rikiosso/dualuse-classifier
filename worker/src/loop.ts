@@ -56,6 +56,22 @@ const SANCTIONED_DESTINATIONS =
 
 export class InvalidRequest extends Error {}
 
+// The pathway stage validates against the verdict that precedes it — recover
+// the most recent final_answer's entry_codes from the transcript.
+function verdictCodesIn(msgs: Msg[]): string[] {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    for (const b of m.content) {
+      if (b.type === "tool_use" && b.name === "final_answer") {
+        const codes = (b.input as { entry_codes?: unknown } | undefined)?.entry_codes;
+        return Array.isArray(codes) ? codes.map(String) : [];
+      }
+    }
+  }
+  return [];
+}
+
 // Strip anything the client should not be able to smuggle in: cache_control,
 // unknown roles, unknown block types, oversized histories.
 // Old corpus lookups dominate transcript size; the model can always re-fetch.
@@ -159,11 +175,40 @@ function execLookup(annex: AnnexDataset, name: string, input: Record<string, unk
   return `Unknown tool ${name}.`;
 }
 
+// The verdict model sometimes garbles an intended-empty eligible_gea into
+// tool-syntax artifacts (seen live on a sanctions card — and rejection only
+// re-triggers the same glitch on retry, fail-closing a correct outcome).
+// Outside gea_available the field carries no meaning, so an id that does not
+// resolve is normalised to empty instead of rejected; gea_available keeps
+// strict validation because the card headlines the id.
+export function normalizePathway(pw: Pathway, annex: AnnexDataset): Pathway {
+  if (pw.outcome !== "gea_available" && pw.eligible_gea && !geaById(annex, pw.eligible_gea)) {
+    return { ...pw, eligible_gea: "" };
+  }
+  return pw;
+}
+
+// Every Category 5 Part 2 item sits inside EU008's subject matter — a live run
+// concluded individual_licence_required for a 5A002 item after testing only
+// EU001/EU007, with EU008 never retrieved. Enforced in code, not prompt.
+const CAT5P2 = /^5[ADE]002/i;
+
 // Pathway validation — same discipline as verdicts: quotes verbatim-in-scope,
 // referenced GEAs must exist, sanctioned destinations MUST carry the sanctions
 // outcome (never a green light), a GEA outcome needs quoted conditions.
-export function validatePathway(pw: Pathway, annex: AnnexDataset): string[] {
+// verdictCodes (the stage-1 entry codes, when known) gates the EU008 sweep.
+export function validatePathway(pw: Pathway, annex: AnnexDataset, verdictCodes: string[] = []): string[] {
   const problems: string[] = [];
+  if (
+    pw.outcome === "individual_licence_required" &&
+    verdictCodes.some((c) => CAT5P2.test(c.trim())) &&
+    geaById(annex, "EU008") &&
+    !pw.conditions_quoted.some((c) => c.gea_id.trim().toUpperCase() === "EU008")
+  ) {
+    problems.push(
+      "the classified item is Category 5 Part 2 (5A002/5D002/5E002) — retrieve EU008 via lookup_gea and either conclude gea_available under it or quote the EU008 scope/exclusion text that rules it out",
+    );
+  }
   if (pw.caveats.length === 0) problems.push("caveats must not be empty");
   if (!pw.destination.trim()) problems.push("destination must be stated");
   if (SANCTIONED_DESTINATIONS.test(pw.destination) && pw.outcome !== "sanctions_review_required") {
@@ -388,7 +433,8 @@ export async function runTurn(
             type: "text",
             text:
               "[system] The verdict could not be validated against the corpus. Ask the " +
-              "user for the missing technical facts instead of concluding.",
+              "user for the missing technical facts instead of concluding. Do not " +
+              "apologise or mention any internal or technical step — just ask.",
           },
         ],
       });
@@ -405,8 +451,8 @@ export async function runTurn(
       const pResp = await call(models.verdict, VERDICT_MAX_TOKENS, "license_pathway");
       const pUse = toolUses(pResp).find((u) => u.name === "license_pathway");
       if (!pUse) break;
-      const pathway = pUse.input as Pathway;
-      const problems = validatePathway(pathway, annex);
+      const pathway = normalizePathway(pUse.input as Pathway, annex);
+      const problems = validatePathway(pathway, annex, verdictCodesIn(transcript));
       transcript.push({ role: "assistant", content: pResp.content as Block[] });
       if (problems.length === 0) {
         transcript.push({
@@ -445,7 +491,8 @@ export async function runTurn(
           type: "text",
           text:
             "[system] The licensing pathway could not be validated. Ask the user for the " +
-            "missing facts (destination, end-use) instead of concluding.",
+            "missing facts (destination, end-use) instead of concluding. Do not " +
+            "apologise or mention any internal or technical step — just ask.",
         },
       ],
     });

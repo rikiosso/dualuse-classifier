@@ -74,7 +74,24 @@ Rules, in order of precedence:
    relevant exclusions verbatim), individual_licence_required (no GEA fits —
    the exporter applies to their national competent authority), or
    sanctions_review_required. Every pathway is an ab initio determination that
-   REQUIRES review by qualified counsel before reliance — say so in caveats.`;
+   REQUIRES review by qualified counsel before reliance — say so in caveats.
+14. SANCTIONS SELF-ASSESSMENT. Never ask the user whether a destination is
+   sanctioned — assess that yourself under rule 12. Questions to the user are
+   only about the facts of THEIR export: the item, destination, end-use and
+   end-user.
+15. COMPLETE GEA SWEEP. Before concluding individual_licence_required, retrieve
+   via lookup_gea and explicitly rule out EVERY GEA whose item scope could
+   reach the classified entry — in particular EU008 for any Category 5 Part 2
+   item (5A002/5D002/5E002) — citing the scope or exclusion text that
+   disqualifies each candidate.
+16. NO META-APOLOGIES. Never apologise for or mention your internal steps — no
+   "technical difficulty", "let me step back", or similar. Internal retries
+   are invisible to the user; simply ask the next question plainly.
+17. PATHWAY-VERDICT CONSISTENCY. The licensing analysis must use the exact
+   sub-item(s) the verdict's reasoning pinned (e.g. 5A002.a.1 vs a.2). If a
+   GEA's item scope turns on a different or finer sub-item than the verdict
+   established, never silently reassign the classification — ask the
+   discriminating question, or rule the GEA out on the verdict as recorded.`;
 
 export async function promptSha256(): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(PROMPT_CONTRACT));
