@@ -126,7 +126,7 @@ describe("sanitizeMessages", () => {
   });
 
   it("enforces the turn cap without KV", () => {
-    const many = Array.from({ length: 12 }, () => ({ role: "user", content: "q" }));
+    const many = Array.from({ length: 12 }, (_, i) => ({ role: "user", content: `q${i}` }));
     expect(() => sanitizeMessages(many, 10)).toThrow("conversation_too_long");
   });
 });
