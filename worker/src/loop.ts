@@ -461,7 +461,7 @@ function looksVerdictConclusive(text: string): boolean {
     /\b(is|are|remains?)[\s*]+listed[\s*]+under\b[^\n]{0,40}\b\d[A-E]\d{3}\b/i.test(text) ||
     // "This matches 5A002.a.1" / "falls under 3B501" / "is controlled under…"
     // — declarative entry-assignments are conclusions, whatever the phrasing
-    /\b(matches|falls[\s*]+under|controlled[\s*]+under|classified[\s*]+under)\b[^\n]{0,40}\b\d[A-E]\d{3}\b/i.test(text) ||
+    /\b(matches|falls[\s*]+under|(controlled|classified|settled|resolved)[\s*]+under)\b[^\n]{0,40}\b\d[A-E]\d{3}\b/i.test(text) ||
     // live gap: "meets all three sub-criteria of 3B501.f.1.b" as prose, then
     // straight to the destination question — the verdict card never shipped
     (/\b(meets?|satisf(?:y|ies)|fulfil?s?)\b[^.\n]{0,60}\b(all|every|each|both)\b[^.\n]{0,60}\b(criteri|sub-criteri|conditions)/i.test(text) &&
