@@ -130,6 +130,22 @@ export function sanitizeMessages(raw: unknown, maxUserTurns: number): Msg[] {
       throw new InvalidRequest("bad content");
     }
     if (blocks.length === 0) continue; // e.g. a thinking-only assistant turn
+    // consecutive duplicate user text messages are retry artifacts (a failed
+    // turn re-sent) — they burned the turn cap double-counting a live user's
+    // error retries. Real conversations always interleave an assistant turn.
+    const prev = out[out.length - 1];
+    const textJoin = (bs: Block[]) =>
+      bs.filter((b) => b.type === "text").map((b) => String((b as { text?: string }).text ?? "")).join("\n");
+    if (
+      m.role === "user" &&
+      prev?.role === "user" &&
+      Array.isArray(prev.content) &&
+      blocks.every((b) => b.type === "text") &&
+      (prev.content as Block[]).every((b) => b.type === "text") &&
+      textJoin(blocks) === textJoin(prev.content as Block[])
+    ) {
+      continue;
+    }
     if (m.role === "user" && blocks.some((b) => b.type === "text")) userTurns += 1;
     out.push({ role: m.role, content: blocks });
   }

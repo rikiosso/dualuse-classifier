@@ -111,6 +111,20 @@ describe("sanitizeMessages", () => {
     expect(JSON.stringify(msgs)).toContain("wavelength");
   });
 
+  it("consecutive duplicate user messages (error retries) count once", () => {
+    const msgs = sanitizeMessages(
+      [
+        { role: "user", content: "opener" },
+        { role: "assistant", content: "question?" },
+        { role: "user", content: "Destination: India." },
+        { role: "user", content: "Destination: India." }, // failed-turn resend
+        { role: "user", content: "Destination: India." },
+      ],
+      3,
+    );
+    expect(msgs).toHaveLength(3); // duplicates collapsed, cap not burned
+  });
+
   it("enforces the turn cap without KV", () => {
     const many = Array.from({ length: 12 }, () => ({ role: "user", content: "q" }));
     expect(() => sanitizeMessages(many, 10)).toThrow("conversation_too_long");
