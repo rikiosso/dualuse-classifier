@@ -963,6 +963,19 @@ describe("naked-verdict escalation — bold 'not listed' prose", () => {
   });
 });
 
+describe("naked-verdict escalation — 'matches <code>' prose", () => {
+  it("a declarative entry-assignment escalates into the verdict stage", async () => {
+    const client = new CannedClaudeClient([
+      textResp(
+        "This matches 5A002.a.1: items having 'information security' as a primary function. To proceed to the licensing pathway: what is the destination country?",
+      ),
+      toolResp("final_answer", GOOD_VERDICT, "tu_m1"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "my VPN appliance, AES-256" }], MODELS, 10);
+    expect(result.type).toBe("verdict");
+  });
+});
+
 describe("naked-verdict escalation — 'meets all criteria' prose", () => {
   it("prose declaring all sub-criteria met escalates into the verdict stage", async () => {
     const client = new CannedClaudeClient([

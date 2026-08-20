@@ -37,20 +37,28 @@ export class AnthropicClient implements ClaudeClient {
   ) {}
 
   async complete(req: ClaudeRequest): Promise<ClaudeResponse> {
-    const resp = await this.fetcher("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": this.apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(req),
-    });
-    if (!resp.ok) {
+    // one retry on transient failures (rate limits, overload, 5xx) — a live
+    // turn surfaced "upstream_error" to the user for a blip that a 1.5s
+    // backoff absorbs. Non-retryable statuses (400s) still throw immediately.
+    for (let attempt = 0; ; attempt++) {
+      const resp = await this.fetcher("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": this.apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(req),
+      });
+      if (resp.ok) return (await resp.json()) as ClaudeResponse;
       const body = await resp.text();
+      const retryable = resp.status === 429 || resp.status >= 500;
+      if (retryable && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 1500));
+        continue;
+      }
       throw new Error(`anthropic ${resp.status}: ${body.slice(0, 300)}`);
     }
-    return (await resp.json()) as ClaudeResponse;
   }
 }
 
