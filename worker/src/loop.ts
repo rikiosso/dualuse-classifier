@@ -593,6 +593,15 @@ function looksPathwayConclusive(text: string): boolean {
   );
 }
 
+// raw tool-call syntax leaking as chat text: the model wrote its invocation
+// inline (or was truncated mid-call) instead of calling the tool — a live
+// turn shipped '<parameter name="status">listed' plus half a JSON array
+export function looksToolSyntaxLeak(text: string): boolean {
+  return /<parameter\s+name=|<\/?antml|<invoke\b|"dotted_path"\s*:|"entry_codes"\s*:|"conditions_quoted"\s*:|"verbatim_quote"\s*:/.test(
+    text,
+  );
+}
+
 function looksVerdictConclusive(text: string): boolean {
   return (
     /(^|\n)\s*\*{0,2}(status|result|classification)\*{0,2}\s*:\s*\*{0,2}(listed|not[_ ]?listed|needs[_ ]?expert)/i.test(text) ||
@@ -889,6 +898,15 @@ export async function runTurn(
     usd += estimateUsd(models.loop, resp.usage);
     const text = textOf(resp);
     transcript.push({ role: "assistant", content: resp.content as Block[] });
+    if (!askEscalated && looksToolSyntaxLeak(text)) {
+      askEscalated = true;
+      if (/license_pathway|"outcome"|"eligible_gea"/.test(text) && lastFinalAnswerIndex(transcript) >= 0) {
+        transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
+        return producePathway();
+      }
+      transcript.push(sysMsg(VERDICT_TOOL_NUDGE));
+      return produceVerdict();
+    }
     if (!askEscalated) {
       if (looksPathwayConclusive(text) && realUserTurns > 1) {
         askEscalated = true;
@@ -1221,6 +1239,15 @@ export async function runTurn(
     // ("Status: Listed ... 4A003.b") without calling final_answer — bypassing
     // corpus validation entirely. Conclusive-looking prose is never returned:
     // it is escalated into the validated verdict stage instead.
+    if (looksToolSyntaxLeak(text)) {
+      if (/license_pathway|"outcome"|"eligible_gea"/.test(text) && lastFinalAnswerIndex(transcript) >= 0) {
+        transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
+        return producePathway();
+      }
+      transcript.push(sysMsg(VERDICT_TOOL_NUDGE));
+      return produceVerdict();
+    }
+
     if (looksPathwayConclusive(text) && realUserTurns > 1) {
       if (lastFinalAnswerIndex(transcript) < 0) {
         // pathway talk before any validated verdict: classify first

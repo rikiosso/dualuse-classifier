@@ -1376,3 +1376,27 @@ describe("question gate", () => {
     expect(r2.type).toBe("question");
   });
 });
+
+describe("tool-syntax leak", () => {
+  it("a raw inline final_answer invocation escalates to the forced verdict stage", async () => {
+    const leak =
+      'All facts are established. Concluding now.\n\nfinal_answer\n<parameter name="status">listed</parameter>\n<parameter name="entry_codes">["3B501"]</parameter>\n{"entry_code": "3B501", "dotted_path": "3B501.f.1", "verbatim_quote": "...';
+    const client = new CannedClaudeClient([
+      textResp(leak),
+      toolResp("final_answer", GOOD_VERDICT, "tu_l1"),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [
+        { role: "user", content: "my litho scanner, all specs and export facts given" },
+        { role: "assistant", content: "What is the NA?" },
+        { role: "user", content: "1.35, overlay 1.2 nm" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("verdict");
+    expect(result.verdict?.entry_codes).toEqual(["3B501"]);
+  });
+});
