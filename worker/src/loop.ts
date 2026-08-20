@@ -241,7 +241,7 @@ export function normalizePathway(pw: Pathway, annex: AnnexDataset): Pathway {
 // Every Category 5 Part 2 item sits inside EU008's subject matter — a live run
 // concluded individual_licence_required for a 5A002 item after testing only
 // EU001/EU007, with EU008 never retrieved. Enforced in code, not prompt.
-const CAT5P2 = /^5[ADE]002/i;
+const CAT5P2 = /^(5A00[2-4]|5B002|5D002|5E002)/i;
 
 // trimOldToolResults shrinks old lookup outputs to keep long conversations
 // under the history cap, telling the model to re-fetch — but the FORCED
@@ -305,6 +305,13 @@ export function validatePathway(pw: Pathway, annex: AnnexDataset, verdictCodes: 
     if (!pw.eligible_gea) problems.push("gea_available requires eligible_gea");
     if (pw.conditions_quoted.length === 0) {
       problems.push("gea_available requires quoted conditions");
+    } else if (
+      pw.eligible_gea &&
+      !pw.conditions_quoted.some((c) => c.gea_id.trim().toUpperCase() === pw.eligible_gea.trim().toUpperCase())
+    ) {
+      problems.push(
+        `gea_available under ${pw.eligible_gea} must quote at least one condition from ${pw.eligible_gea} itself`,
+      );
     }
   }
   if (pw.outcome === "individual_licence_required" && pw.conditions_quoted.length === 0) {
@@ -388,7 +395,14 @@ export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
     // the quote must appear in the SPECIFIC provision named by dotted_path — not
     // merely somewhere in the multi-page entry (blocks comparator/number flips
     // laundered from a sibling clause)
-    const scope = provisionText(entry, path) ?? entry.verbatim_text;
+    const resolved = provisionText(entry, path);
+    if (resolved === null && /^\d[A-E]\d{3}(\.[a-z0-9]+)+$/i.test(path)) {
+      problems.push(
+        `dotted_path ${path} does not resolve to a provision of ${r.entry_code} — cite the exact sub-item as printed in lookup_entries output`,
+      );
+      continue;
+    }
+    const scope = resolved ?? entry.verbatim_text;
     if (r.verbatim_quote.replace(/\s+/g, " ").trim().length < MIN_QUOTE_CHARS) {
       problems.push(`verbatim_quote for ${path} is too short to anchor a citation`);
     } else if (!quoteAppearsIn(r.verbatim_quote, scope)) {
@@ -654,6 +668,7 @@ export async function runTurn(
   let usd = 0;
   let nudgedBundle = false;
   let askEscalated = false;
+  let conclusiveRegen = false;
   // Cloudflare's edge cancels requests around 100s — a forced 4k-token
   // retry on top of a long turn crosses it and the user sees a dead reply.
   // Past this elapsed budget, skip second forced attempts and fail closed
@@ -905,6 +920,19 @@ export async function runTurn(
         transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
         return producePathway();
       }
+    }
+    // after an escalation round-trip (askEscalated set) conclusive prose can
+    // reach here again — regenerate once rather than ship a naked conclusion
+    if (
+      askEscalated &&
+      !conclusiveRegen &&
+      (looksVerdictConclusive(text) || (looksPathwayConclusive(text) && realUserTurns > 1))
+    ) {
+      conclusiveRegen = true;
+      transcript.push(
+        sysMsg("[system] State no conclusion in prose. Ask your single most important question, plainly."),
+      );
+      return askOneQuestion();
     }
     const escalated = await shipQuestion(text, () => askOneQuestion());
     if (escalated) return escalated;
