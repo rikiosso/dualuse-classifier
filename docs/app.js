@@ -133,7 +133,43 @@
     }
   }
 
-  function verdictAsText(v) {
+  let lastVerdictData = null;
+  let lastPathwayData = null;
+  let determinedOn = null;
+
+  function pathwaySectionAsText(pw) {
+    const label = {
+      gea_available: "EU GENERAL EXPORT AUTHORISATION AVAILABLE",
+      individual_licence_required: "INDIVIDUAL AUTHORISATION REQUIRED",
+      sanctions_review_required: "SANCTIONS REVIEW REQUIRED",
+    };
+    const lines = [
+      "Licensing pathway: " + (label[pw.outcome] || pw.outcome) +
+        (pw.eligible_gea ? " — " + pw.eligible_gea : "") + " · destination: " + pw.destination,
+    ];
+    for (const c of pw.conditions_quoted || []) {
+      lines.push("- " + c.gea_id + ': "' + c.verbatim_quote + '" — ' + c.explanation);
+    }
+    for (const c of pw.caveats || []) lines.push("Caveat: " + c);
+    if (pw.disclaimer) lines.push(pw.disclaimer);
+    return lines;
+  }
+
+  function deliverableAsText() {
+    const lines = [];
+    if (lastVerdictData) lines.push(...verdictLines(lastVerdictData));
+    if (lastPathwayData) {
+      if (lines.length) lines.push("");
+      lines.push(...pathwaySectionAsText(lastPathwayData));
+    }
+    const corpus = (lastVerdictData || lastPathwayData || {}).corpus_version || "";
+    lines.push("Corpus version: " + corpus);
+    lines.push("Determined on " + (determinedOn || new Date().toISOString().slice(0, 10)) +
+      " — https://rikiosso.github.io/dualuse-classifier/");
+    return lines.join("\n");
+  }
+
+  function verdictLines(v) {
     const label = { listed: "LISTED IN ANNEX I", not_listed: "NOT LISTED IN ANNEX I", needs_expert: "NEEDS EXPERT REVIEW" };
     const lines = [
       "EU Dual-Use Classifier — indicative triage (not legal advice)",
@@ -145,9 +181,7 @@
     }
     for (const c of v.caveats || []) lines.push("Caveat: " + c);
     if (v.disclaimer) lines.push(v.disclaimer);
-    lines.push("Corpus version: " + v.corpus_version + (v.corpus_sha256 ? " (sha256 " + v.corpus_sha256.slice(0, 12) + ")" : ""));
-    lines.push("Generated at " + new Date().toISOString() + " — https://rikiosso.github.io/dualuse-classifier/");
-    return lines.join("\n");
+    return lines;
   }
 
   function addVerdictCard(v) {
@@ -192,11 +226,17 @@
       card.appendChild(q);
     }
 
+    lastVerdictData = v;
+    lastPathwayData = null;
+    determinedOn = new Date().toISOString().slice(0, 10);
     const cav = document.createElement("div");
     cav.className = "caveats";
-    const parts = [...(v.caveats || [])];
+    // the fixed disclaimer already says "not legal advice" — model caveats
+    // repeating it would stack the same limitation three times on the card
+    const parts = (v.caveats || []).filter((c) => !/not legal advice/i.test(c));
     if (v.disclaimer) parts.push(v.disclaimer);
     parts.push("Corpus version: " + v.corpus_version);
+    parts.push("Determined on " + determinedOn);
     cav.textContent = parts.join(" · ");
     card.appendChild(cav);
 
@@ -205,7 +245,7 @@
     copyBtn.type = "button";
     copyBtn.textContent = "Copy result";
     copyBtn.addEventListener("click", async () => {
-      const ok = await copyText(verdictAsText(v));
+      const ok = await copyText(deliverableAsText());
       copyBtn.textContent = ok ? "Copied ✓" : "Copy failed — select the text manually";
       setTimeout(() => (copyBtn.textContent = "Copy result"), 2500);
     });
@@ -228,7 +268,7 @@
       lastVerdictCard = null;
       card.classList.add("pathway", pw.outcome);
       const oldCopy = card.querySelector(".copy");
-      if (oldCopy) oldCopy.remove();
+      if (oldCopy) oldCopy.remove(); // re-appended at the card end below
       const divider = document.createElement("div");
       divider.className = "pathway-divider";
       card.appendChild(divider);
@@ -273,11 +313,16 @@
       card.appendChild(q);
     }
 
+    lastPathwayData = pw;
     const cav = document.createElement("div");
     cav.className = "caveats";
-    const parts = [...(pw.caveats || [])];
+    const merged = !!card.querySelector(".pathway-divider");
+    const parts = (pw.caveats || []).filter((c) => !/not legal advice/i.test(c));
     if (pw.disclaimer) parts.push(pw.disclaimer);
-    parts.push("Corpus version: " + pw.corpus_version);
+    if (!merged) {
+      parts.push("Corpus version: " + pw.corpus_version);
+      parts.push("Determined on " + new Date().toISOString().slice(0, 10));
+    }
     cav.textContent = parts.join(" · ");
     card.appendChild(cav);
 
@@ -293,6 +338,17 @@
     a.textContent = "Request legal review →";
     review.appendChild(a);
     card.appendChild(review);
+
+    const copyBtn2 = document.createElement("button");
+    copyBtn2.className = "copy";
+    copyBtn2.type = "button";
+    copyBtn2.textContent = "Copy result";
+    copyBtn2.addEventListener("click", async () => {
+      const ok = await copyText(deliverableAsText());
+      copyBtn2.textContent = ok ? "Copied ✓" : "Copy failed — select the text manually";
+      setTimeout(() => (copyBtn2.textContent = "Copy result"), 2500);
+    });
+    card.appendChild(copyBtn2);
 
     if (!card.parentNode) messagesEl.appendChild(card);
     card.scrollIntoView({ behavior: "smooth", block: "end" });

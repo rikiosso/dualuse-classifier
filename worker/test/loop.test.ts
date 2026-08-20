@@ -1019,7 +1019,15 @@ describe("naked-verdict escalation — bold 'not listed' prose", () => {
     const notListed = {
       status: "not_listed",
       entry_codes: [],
-      reasoning: [],
+      reasoning: [
+        {
+          entry_code: "3B501",
+          dotted_path: "3B501.f.1.b.1",
+          verbatim_quote: "A light source wavelength equal to or longer than 193 nm;",
+          explanation: "The laptop has no light source — candidate tested and ruled out.",
+          met: false,
+        },
+      ],
       caveats: ["Indicative only; Art. 4/5 catch-alls may apply."],
       definitions_used: [],
     };
@@ -1310,12 +1318,12 @@ describe("post-verdict dead air", () => {
 });
 
 describe("question gate", () => {
-  it("a REDUNDANT question is retried; the second question ships", async () => {
+  it("a redundant precision re-ask is hard-blocked by detectors before any judge call", async () => {
     const client = new CannedClaudeClient([
       textResp("Can you confirm the numerical aperture again, e.g. 1.35 or 1.350?"),
       textResp("What is the dedicated chuck overlay value, in nanometres?"),
     ]);
-    const judgeClient = new CannedClaudeClient([textResp("REDUNDANT")]);
+    const judgeClient = new CannedClaudeClient([textResp("NEEDED")]);
     const result = await runTurn(
       client,
       ANNEX,
@@ -1330,9 +1338,30 @@ describe("question gate", () => {
     );
     expect(result.type).toBe("question");
     expect(result.text).toContain("chuck overlay");
-    // the second question is NOT re-vetted (one vet per turn) — judge spent
-    expect(judgeClient.requests).toHaveLength(1);
-    expect(JSON.stringify(judgeClient.requests[0].messages)).toContain("1.35");
+    // the echo/equal-alternatives detectors blocked it deterministically —
+    // the judge is only consulted for the clean retry question
+    expect(judgeClient.requests.length).toBeLessThanOrEqual(1);
+  });
+
+  it("detector unit tests: echo, equal alternatives, near-duplicate", async () => {
+    const { questionEchoesStatedValue, questionOffersEqualAlternatives, questionNearDuplicate } =
+      await import("../src/loop");
+    const users = ["Maximum numerical aperture is 1.35 (water immersion)."];
+    expect(
+      questionEchoesStatedValue("Could you confirm the numerical aperture again — 1.35?", users),
+    ).toBe(true);
+    expect(questionEchoesStatedValue("What is the dedicated chuck overlay, in nm?", users)).toBe(false);
+    // hedged values defer to the judge instead of hard-blocking
+    expect(
+      questionEchoesStatedValue("Can you confirm it is 1.4?", ["endurance roughly 1.4 hours"]),
+    ).toBe(false);
+    expect(questionOffersEqualAlternatives("Is it 1.35 exactly, or a more precise 1.350?")).toBe(true);
+    expect(questionOffersEqualAlternatives("Is the endurance 30 minutes or 1 hour?")).toBe(false);
+    const prior = ["What is the destination country and end-user for this export?"];
+    expect(
+      questionNearDuplicate("What is the destination country and end-user for the export?", prior),
+    ).toBe(true);
+    expect(questionNearDuplicate("What is the maximum flight endurance in still air?", prior)).toBe(false);
   });
 
   it("a NEEDED question ships untouched; judge failure never blocks", async () => {

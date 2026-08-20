@@ -52,22 +52,32 @@ export interface TurnResult {
 // separate regulations with their own complexity; a wrong answer here is the
 // most expensive mistake the tool could make. Enforced server-side.
 const SANCTIONED_DESTINATIONS =
-  /\b(russia|russian|belarus|iran|north korea|dprk|syria|crimea|donetsk|luhansk|myanmar|venezuela)\b/i;
+  /\b(russia|russian?|rusia|russie|russland|moscow|moscú|moskau|belarus|bielorrusia|biélorussie|belarusian|minsk|iran(?:ian)?|irán|tehe?ran|teherán|north[ -]?korea|corea del norte|corée du nord|nordkorea|pyongyang|dprk|democratic people'?s republic of korea|syria|siria|syrie|syrien|damascus|crimea|crimée|donetsk|luhansk|myanmar|burma|birmania|venezuela|caracas)\b/i;
 
 export class InvalidRequest extends Error {}
 
 // The pathway stage validates against the verdict that precedes it — recover
 // the most recent final_answer's entry_codes from the transcript.
 function lastFinalAnswerIndex(msgs: Msg[]): number {
+  // only an ACCEPTED verdict counts — a rejected attempt (is_error result)
+  // or a dangling call must not unlock stage 2 on a failure artifact
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
-    if (
-      m.role === "assistant" &&
-      Array.isArray(m.content) &&
-      m.content.some((b) => b.type === "tool_use" && b.name === "final_answer")
-    ) {
-      return i;
-    }
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    const use = m.content.find((b) => b.type === "tool_use" && b.name === "final_answer");
+    if (!use) continue;
+    const next = msgs[i + 1];
+    const accepted =
+      next?.role === "user" &&
+      Array.isArray(next.content) &&
+      next.content.some(
+        (b) =>
+          b.type === "tool_result" &&
+          b.tool_use_id === use.id &&
+          !b.is_error &&
+          String(b.content ?? "").startsWith("Verdict recorded"),
+      );
+    if (accepted) return i;
   }
   return -1;
 }
@@ -146,7 +156,12 @@ export function sanitizeMessages(raw: unknown, maxUserTurns: number): Msg[] {
     ) {
       continue;
     }
-    if (m.role === "user" && blocks.some((b) => b.type === "text")) userTurns += 1;
+    // server-injected [system] nudges are machinery, not user turns — they
+    // were eating the conversation cap (live: "length limit" after ~5 answers)
+    const isRealUserText = blocks.some(
+      (bl) => bl.type === "text" && !String((bl as { text?: string }).text ?? "").startsWith("[system]"),
+    );
+    if (m.role === "user" && isRealUserText) userTurns += 1;
     out.push({ role: m.role, content: blocks });
   }
   if (out[0].role !== "user") throw new InvalidRequest("first message must be user");
@@ -261,6 +276,9 @@ function restoreTrimmedLookups(msgs: Msg[], annex: AnnexDataset): void {
 // verdictCodes (the stage-1 entry codes, when known) gates the EU008 sweep.
 export function validatePathway(pw: Pathway, annex: AnnexDataset, verdictCodes: string[] = []): string[] {
   const problems: string[] = [];
+  if (!["gea_available", "individual_licence_required", "sanctions_review_required"].includes(String(pw.outcome))) {
+    problems.push(`outcome ${JSON.stringify(pw.outcome).slice(0, 40)} is not a valid pathway outcome`);
+  }
   if (
     pw.outcome === "individual_licence_required" &&
     verdictCodes.some((c) => CAT5P2.test(c.trim())) &&
@@ -321,6 +339,16 @@ export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
   // requirement — the old symmetric checks (every headline backed by any row,
   // every cited code headlined) forced a live verdict to headline "3B001,
   // 3B501" while its own reasoning ruled 3B001 out.
+  if (!["listed", "not_listed", "needs_expert"].includes(String(v.status))) {
+    problems.push(`status ${JSON.stringify(v.status).slice(0, 40)} is not a valid verdict status`);
+  }
+  // a not-listed card is the tool's green light — it must show its work:
+  // which candidate entries were tested and why each was ruled out
+  if (v.status === "not_listed" && v.reasoning.length === 0) {
+    problems.push(
+      "a not_listed verdict must include reasoning rows (met=false) showing the candidate entries tested and ruled out",
+    );
+  }
   const headlined = v.entry_codes.map((c) => c.toUpperCase());
   if (v.status === "listed") {
     if (v.entry_codes.length === 0) problems.push("listed verdict needs entry_codes");
@@ -456,6 +484,91 @@ export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
   return problems;
 }
 
+// QUESTION-DEFECT DETECTORS (pure, deterministic — they run on every
+// candidate question before any judge model is consulted). Fixtures: the
+// live failures "confirm the exact numerical aperture again, e.g. 1.35 or
+// 1.350?" (echo + equal alternatives) and the five-times re-asked
+// destination question (near-duplicate).
+const UNIT_FACTORS: Record<string, number> = {
+  nm: 1, nanometre: 1, nanometres: 1, nanometer: 1, nanometers: 1,
+  um: 1000, µm: 1000, micrometre: 1000, micron: 1000, microns: 1000,
+  mm: 1e6, millimetre: 1e6, millimeter: 1e6,
+};
+
+function numberTokens(text: string): { value: number; unit: string }[] {
+  const out: { value: number; unit: string }[] = [];
+  const re = /(\d+(?:[.,]\d+)?)\s*(nm|nanometres?|nanometers?|um|µm|micrometres?|microns?|mm|millimetres?|millimeters?)?\b/gi;
+  for (const m of text.matchAll(re)) {
+    const value = parseFloat(m[1].replace(",", "."));
+    if (!Number.isFinite(value)) continue;
+    const unitRaw = (m[2] ?? "").toLowerCase();
+    const factor = UNIT_FACTORS[unitRaw];
+    out.push(factor ? { value: value * factor, unit: "nm" } : { value, unit: unitRaw || "" });
+  }
+  return out;
+}
+
+function isHedged(text: string, value: number): boolean {
+  const re = new RegExp(
+    "\\b(about|roughly|approx\\w*|around|circa|~)\\s*" + String(value).replace(".", "[.,]"),
+    "i",
+  );
+  return re.test(text);
+}
+
+// a question that echoes a number the user already stated, in the same
+// sentence as a confirm-verb, is asking for nothing
+export function questionEchoesStatedValue(candidate: string, userTexts: string[]): boolean {
+  const stated = userTexts.flatMap((t) => numberTokens(t));
+  if (stated.length === 0) return false;
+  for (const sentence of candidate.split(/(?<=[.?!])\s+/)) {
+    if (!/\b(confirm|verify|double.?check|re.?state|again)\b/i.test(sentence)) continue;
+    for (const tok of numberTokens(sentence)) {
+      const echoed = stated.some((s) => s.unit === tok.unit && Math.abs(s.value - tok.value) < 1e-9);
+      if (echoed && !userTexts.some((t) => isHedged(t, tok.value))) return true;
+    }
+  }
+  return false;
+}
+
+// "e.g. 1.35 exactly, or a more precise decimal like 1.350" — alternatives
+// that normalise to the same number ask for nothing
+export function questionOffersEqualAlternatives(candidate: string): boolean {
+  const re = /(\d+(?:[.,]\d+)?)\s*(nm|um|µm|mm)?[^.?\n\d]{0,24}\bor\b[^.?\n\d]{0,40}(\d+(?:[.,]\d+)?)\s*(nm|um|µm|mm)?/gi;
+  for (const m of candidate.matchAll(re)) {
+    const a = parseFloat(m[1].replace(",", ".")) * (UNIT_FACTORS[(m[2] ?? "").toLowerCase()] ?? 1);
+    const b = parseFloat(m[3].replace(",", ".")) * (UNIT_FACTORS[(m[4] ?? "").toLowerCase()] ?? 1);
+    if (Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 1e-9) return true;
+  }
+  return false;
+}
+
+function tokenSet(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 2),
+  );
+}
+
+// near-duplicate of a question the user has ALREADY answered — re-asking is
+// forbidden whatever caused it (an unanswered question may be re-asked)
+export function questionNearDuplicate(candidate: string, answeredQuestions: string[]): boolean {
+  const c = tokenSet(candidate);
+  if (c.size === 0) return false;
+  for (const q of answeredQuestions) {
+    const s = tokenSet(q);
+    if (s.size === 0) continue;
+    let inter = 0;
+    for (const w of c) if (s.has(w)) inter++;
+    const union = c.size + s.size - inter;
+    if (union > 0 && inter / union >= 0.8) return true;
+  }
+  return false;
+}
+
 // Conclusive-prose detectors, shared by the main loop and the ask-fallback:
 // conclusions must reach the user ONLY as validated cards, never as chat text.
 function looksPathwayConclusive(text: string): boolean {
@@ -575,6 +688,18 @@ export async function runTurn(
   let geaInjected = false;
   const ensureGeaContext = () => {
     if (geaInjected) return;
+    // the transcript is replayed every turn — a previous turn's injection
+    // persists, and re-injecting would grow tokens linearly per turn
+    if (
+      transcript.some(
+        (m) =>
+          Array.isArray(m.content) &&
+          m.content.some((b) => b.type === "tool_use" && String(b.id ?? "").startsWith("srv_gea_")),
+      )
+    ) {
+      geaInjected = true;
+      return;
+    }
     geaInjected = true;
     const ids = ["EU001", "EU002", "EU003", "EU004", "EU005", "EU006", "EU007", "EU008", "COMMON_LIST"];
     const texts = ids
@@ -643,6 +768,72 @@ export async function runTurn(
     "answer to it would change the outcome. Re-read the user's messages, use the " +
     "facts exactly as stated, and either ask for a DIFFERENT genuinely missing " +
     "discriminating parameter or conclude now via final_answer / license_pathway.";
+
+  // THE question chokepoint: every candidate question passes the
+  // deterministic defect detectors on every attempt, then (once per turn)
+  // the judge. First offence: one pointed retry. Second offence: conclude —
+  // the forced stages fail closed to a question if facts genuinely are
+  // missing, so a wrong forced conclude cannot ship.
+  let gateNudged = false;
+  let gateEscalated = false;
+  const realUserTextList = (): string[] =>
+    transcript
+      .filter((m) => m.role === "user" && Array.isArray(m.content))
+      .map((m) =>
+        (m.content as Block[])
+          .filter((b) => b.type === "text")
+          .map((b) => String((b as { text?: string }).text ?? ""))
+          .join("\n"),
+      )
+      .filter((t) => t && !t.startsWith("[system]"));
+  const answeredAssistantQuestions = (): string[] => {
+    const out: string[] = [];
+    for (let i = 0; i < transcript.length - 1; i++) {
+      const m = transcript[i];
+      const next = transcript[i + 1];
+      if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+      const text = (m.content as Block[])
+        .filter((b) => b.type === "text")
+        .map((b) => String((b as { text?: string }).text ?? ""))
+        .join("\n");
+      if (!text.includes("?")) continue;
+      const answered =
+        next?.role === "user" &&
+        Array.isArray(next.content) &&
+        (next.content as Block[]).some(
+          (b) => b.type === "text" && !String((b as { text?: string }).text ?? "").startsWith("[system]"),
+        );
+      if (answered) out.push(text);
+    }
+    return out;
+  };
+  const shipQuestion = async (
+    text: string,
+    retry: () => Promise<TurnResult>,
+  ): Promise<TurnResult | null> => {
+    const userTexts = realUserTextList();
+    const blocked =
+      questionEchoesStatedValue(text, userTexts) ||
+      questionOffersEqualAlternatives(text) ||
+      questionNearDuplicate(text, answeredAssistantQuestions()) ||
+      !(await vetQuestion(text));
+    if (!blocked) return null;
+    if (!gateNudged) {
+      gateNudged = true;
+      transcript.push(sysMsg(QUESTION_GATE_NUDGE));
+      return retry();
+    }
+    if (!gateEscalated) {
+      gateEscalated = true;
+      if (lastFinalAnswerIndex(transcript) >= 0) {
+        transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
+        return producePathway();
+      }
+      transcript.push(sysMsg(VERDICT_TOOL_NUDGE));
+      return produceVerdict();
+    }
+    return null; // bounded: after nudge + escalation, ship rather than loop
+  };
 
   const call = async (model: string, maxTokens: number, forced: false | string) => {
     const msgs = transcript.map((m, i) =>
@@ -715,10 +906,8 @@ export async function runTurn(
         return producePathway();
       }
     }
-    if (!(await vetQuestion(text))) {
-      transcript.push(sysMsg(QUESTION_GATE_NUDGE));
-      return askOneQuestion();
-    }
+    const escalated = await shipQuestion(text, () => askOneQuestion());
+    if (escalated) return escalated;
     return { type: "question", text, transcript, usd };
   };
 
@@ -751,7 +940,9 @@ export async function runTurn(
         // not been provided" instead of simply asking for the overlay.
         const missingParam =
           verdict.status === "needs_expert" &&
-          /not (yet |been )*?(provided|established|supplied|stated|given)/i.test(JSON.stringify(verdict));
+          /\b(parameter|value|figure|overlay|aperture|endurance|wavelength|specification)\b[^.]{0,80}\bnot (yet |been )*(provided|supplied|stated|given)|\bnot (yet |been )*(provided|supplied|stated|given)\b[^.]{0,40}\b(parameter|value|figure)\b/i.test(
+            JSON.stringify(verdict),
+          );
         if (problems.length === 0 && verdict.status === "needs_expert" && (realUserTurns <= 1 || missingParam)) {
           transcript.push({
             role: "user",
@@ -814,9 +1005,9 @@ export async function runTurn(
           },
         ],
       });
-      const retry = await call(models.loop, LOOP_MAX_TOKENS, false);
-      transcript.push({ role: "assistant", content: retry.content as Block[] });
-      return { type: "question", text: textOf(retry), transcript, usd };
+      // the guarded fallback carries every question/conclusion protection —
+      // this exit used to run raw with tools enabled and no guards at all
+      return askOneQuestion();
     }
   };
 
@@ -934,15 +1125,22 @@ export async function runTurn(
       }
       transcript.push({
         role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: pathwayCall.id,
-            content:
-              "Draft received. Now produce the authoritative licensing pathway by calling " +
-              "license_pathway with exact verbatim quotes from lookup_gea and full caveats.",
-          },
-        ],
+        // every sibling tool_use must be answered or the next API call 400s
+        content: uses.map((u) =>
+          u === pathwayCall
+            ? {
+                type: "tool_result",
+                tool_use_id: u.id,
+                content:
+                  "Draft received. Now produce the authoritative licensing pathway by calling " +
+                  "license_pathway with exact verbatim quotes from lookup_gea and full caveats.",
+              }
+            : {
+                type: "tool_result",
+                tool_use_id: u.id,
+                content: execLookup(annex, String(u.name), (u.input ?? {}) as Record<string, unknown>),
+              },
+        ),
       });
       return producePathway();
     }
@@ -953,16 +1151,23 @@ export async function runTurn(
       transcript.push({ role: "assistant", content: resp.content as Block[] });
       transcript.push({
         role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: finalCall.id,
-            content:
-              "Draft framework received. Now produce the authoritative final verdict by " +
-              "calling final_answer with complete reasoning, exact verbatim quotes and " +
-              "full caveats.",
-          },
-        ],
+        // every sibling tool_use must be answered or the next API call 400s
+        content: uses.map((u) =>
+          u === finalCall
+            ? {
+                type: "tool_result",
+                tool_use_id: u.id,
+                content:
+                  "Draft framework received. Now produce the authoritative final verdict by " +
+                  "calling final_answer with complete reasoning, exact verbatim quotes and " +
+                  "full caveats.",
+              }
+            : {
+                type: "tool_result",
+                tool_use_id: u.id,
+                content: execLookup(annex, String(u.name), (u.input ?? {}) as Record<string, unknown>),
+              },
+        ),
       });
       return produceVerdict();
     }
@@ -1095,10 +1300,8 @@ export async function runTurn(
       }
     }
 
-    if (!(await vetQuestion(text))) {
-      transcript.push(sysMsg(QUESTION_GATE_NUDGE));
-      continue;
-    }
+    const escalated = await shipQuestion(text, () => askOneQuestion());
+    if (escalated) return escalated;
 
     return { type: "question", text, transcript, usd };
   }

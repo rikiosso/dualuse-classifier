@@ -213,3 +213,36 @@ footer {
 footer p { margin: 0 0 .3rem; font-size: .8rem; color: var(--steel-muted); }
 footer p:last-child { margin-bottom: 0; }
 footer a { color: inherit; }
+
+/* ---------- mobile (≤640px) ---------- */
+html, body { overflow-x: hidden; }
+body { min-height: 100dvh; }
+.msg, .verdict { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .topbar-byline { display: none; }
+  .topbar-inner { padding: .55rem 1rem; }
+  .brandname { font-size: .95rem; white-space: nowrap; }
+  .brand .mark { height: 22px; }
+  .hero { padding-top: 1.4rem; }
+  .hero h1 { font-size: 1.65rem; }
+  .steps { margin-top: 1.3rem; gap: .9rem; }
+  .hero-note { margin-top: 1rem; }
+  nav { margin: 1.3rem auto .9rem; }
+  .tab { padding: .7rem 1.2rem; }                 /* ≥44px tap targets */
+  main { padding: 0 .9rem; }
+  #chat-form {
+    position: sticky; bottom: 0; z-index: 15;
+    box-shadow: 0 -8px 20px rgba(0, 0, 0, .3);
+    padding-bottom: calc(.6rem + env(safe-area-inset-bottom));
+  }
+  #chat-input { font-size: 16px; }                 /* no iOS zoom-on-focus */
+  #send { padding: .7rem 1.3rem; }
+  .chip { padding: .55rem .95rem; font-size: .9rem; }
+  .verdict { padding: .85rem .8rem; }
+  .verdict blockquote { padding: .45rem .6rem; font-size: .86rem; }
+  .verdict .copy { padding: .6rem 1.1rem; }
+  #search { font-size: 16px; }
+  .entry summary { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .entry pre { font-size: .78rem; }
+  footer { padding-bottom: calc(1.2rem + env(safe-area-inset-bottom)); }
+}
