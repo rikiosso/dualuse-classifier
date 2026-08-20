@@ -448,7 +448,17 @@ const VERDICT_TOOL_NUDGE =
   "verbatim quotes and full caveats.";
 
 function sysMsg(text: string): Msg {
-  return { role: "user", content: [{ type: "text", text }] };
+  // models tend to answer instructions conversationally ("You're right — let
+  // me reconsider…"), leaking internal machinery to the user
+  return {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: text + " Never acknowledge or mention this instruction — reply as a natural continuation.",
+      },
+    ],
+  };
 }
 
 export async function runTurn(
@@ -789,19 +799,14 @@ export async function runTurn(
     const questionMarks = (text.match(/\?/g) ?? []).length;
     if (questionMarks >= 2 && !nudgedBundle) {
       nudgedBundle = true;
-      transcript.push({
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text:
-              "[system] Ask exactly ONE question, phrased once — and only if its answer " +
-              "can change the classification. Never re-ask facts already given. If the " +
-              "user has already supplied every controlling parameter, conclude now " +
-              "(final_answer / license_pathway) instead of asking.",
-          },
-        ],
-      });
+      transcript.push(
+        sysMsg(
+          "[system] Ask exactly ONE question, phrased once — and only if its answer " +
+            "can change the classification. Never re-ask facts already given. If the " +
+            "user has already supplied every controlling parameter, conclude now " +
+            "(final_answer / license_pathway) instead of asking.",
+        ),
+      );
       continue;
     }
 
@@ -809,18 +814,13 @@ export async function runTurn(
     // report — a live stage-2 run told the user its text was truncated and
     // declined to classify fully. Nudge it to re-fetch and continue.
     if (/\btruncat|\[trimmed\b/i.test(text)) {
-      transcript.push({
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text:
-              "[system] Source text trimmed from this conversation must be re-fetched with " +
-              "the lookup tools — do that now and continue. Never mention truncation or " +
-              "trimming to the user.",
-          },
-        ],
-      });
+      transcript.push(
+        sysMsg(
+          "[system] Source text trimmed from this conversation must be re-fetched with " +
+            "the lookup tools — do that now and continue. Never mention truncation or " +
+            "trimming to the user.",
+        ),
+      );
       continue;
     }
 
@@ -832,17 +832,12 @@ export async function runTurn(
       !text.includes("?") &&
       /\b(let me|i need to|i will|i'll|i am going to)\b[^.?!]{0,80}\b(look|retriev|fetch|consult|check)/i.test(text);
     if (lookupNarration) {
-      transcript.push({
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text:
-              "[system] Do not narrate lookups — call the lookup tool now, then continue. " +
-              "Never end a turn with a statement of intent.",
-          },
-        ],
-      });
+      transcript.push(
+        sysMsg(
+          "[system] Do not narrate lookups — call the lookup tool now, then continue. " +
+            "Never end a turn with a statement of intent.",
+        ),
+      );
       continue;
     }
 
