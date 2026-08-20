@@ -925,7 +925,15 @@ export async function runTurn(
     // destination, end-use and end-user several times over — a live run still
     // wanted a fourth optional question. Force the pathway tool instead; if
     // facts truly are missing, validation fails closed to a question anyway.
+    // PRE-VERDICT CONVERGENCE: six answered turns with no verdict is an
+    // interview that will not land on its own — a live run declared "all the
+    // technical facts are in hand" and asked another question anyway. Force
+    // the verdict; fail-closed asks the one genuinely missing question.
     const verdictAt = lastFinalAnswerIndex(transcript);
+    if (verdictAt < 0 && realUserTurns >= 6) {
+      transcript.push(sysMsg(VERDICT_TOOL_NUDGE));
+      return produceVerdict();
+    }
     if (verdictAt >= 0) {
       const answersSince = transcript.filter(
         (m, t) =>

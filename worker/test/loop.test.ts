@@ -1158,6 +1158,22 @@ describe("needs_expert with a missing user-suppliable parameter", () => {
   });
 });
 
+describe("pre-verdict convergence", () => {
+  it("six answered turns with no verdict force the verdict stage", async () => {
+    const client = new CannedClaudeClient([
+      textResp("Just one more point to confirm before I finalize the record?"),
+      toolResp("final_answer", GOOD_VERDICT, "tu_c1"),
+    ]);
+    const turns = [];
+    for (let i = 0; i < 6; i++) {
+      turns.push({ role: "user", content: `fact ${i}` });
+      if (i < 5) turns.push({ role: "assistant", content: `question ${i}?` });
+    }
+    const result = await runTurn(client, ANNEX, turns, MODELS, 10);
+    expect(result.type).toBe("verdict");
+  });
+});
+
 describe("stage-2 convergence", () => {
   it("after a verdict and three answered turns, a fourth question is overridden by the pathway tool", async () => {
     const ANNEXP: typeof ANNEX = {
