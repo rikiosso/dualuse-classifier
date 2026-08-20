@@ -38,12 +38,19 @@ a:hover { color: var(--steel); }
 button { font: inherit; }
 .hidden { display: none !important; }
 
-/* ---------- top bar ---------- */
+/* ---------- top bar (sticky: the brand survives every scroll depth,
+   so any screenshot of a card carries the product identity) ---------- */
 .topbar {
-  display: flex; justify-content: space-between; align-items: center; gap: 1rem;
-  max-width: 60rem; width: 100%; margin: 0 auto; padding: 1.1rem 1.25rem 0;
+  position: sticky; top: 0; z-index: 20;
+  background: var(--espresso); border-bottom: 1px solid var(--line);
 }
-.topbar .mark { height: 34px; width: auto; display: block; }
+.topbar-inner {
+  display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+  max-width: 60rem; margin: 0 auto; padding: .65rem 1.25rem;
+}
+.brand { display: flex; align-items: center; gap: .65rem; }
+.brand .mark { height: 26px; width: auto; display: block; }
+.brandname { font-family: var(--display); color: var(--crystal); font-size: 1rem; letter-spacing: .02em; }
 .topbar-byline { font-size: .85rem; color: var(--steel-muted); text-decoration: none; margin-left: auto; }
 .topbar-byline:hover { color: var(--crystal); text-decoration: underline; }
 
