@@ -382,7 +382,9 @@ function looksPathwayConclusive(text: string): boolean {
 function looksVerdictConclusive(text: string): boolean {
   return (
     /(^|\n)\s*\*{0,2}(status|result|classification)\*{0,2}\s*:\s*\*{0,2}(listed|not[_ ]?listed|needs[_ ]?expert)/i.test(text) ||
-    /\b(is|are)\s+(therefore\s+|clearly\s+|thus\s+)?(listed|not listed)\s+in\s+annex\s+i\b/i.test(text) ||
+    // [\s*]+ tolerates markdown bold: a live turn shipped "is **not listed
+    // in Annex I**" as prose because the asterisks broke plain \s+ matching
+    /\b(is|are)[\s*]+((therefore|clearly|thus)[\s*]+)?(listed|not[\s*_-]?listed)[\s*]+in[\s*]+annex[\s*]+i\b/i.test(text) ||
     /classification result/i.test(text) ||
     // live gap: "meets all three sub-criteria of 3B501.f.1.b" as prose, then
     // straight to the destination question — the verdict card never shipped

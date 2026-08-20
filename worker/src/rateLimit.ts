@@ -41,14 +41,19 @@ export async function checkBudget(
   ip: string,
   salt: string,
   isConversationStart: boolean,
-  skipIpCap = false, // tester bypass: fairness cap only — spend caps always apply
+  isTester = false, // tester bypass: fairness cap AND daily pacing — the monthly stop applies to everyone
 ): Promise<{ ok: true } | { ok: false; reason: "daily_budget_exhausted" | "rate_limited" }> {
   const daySpend = parseFloat((await kv.get(`spend:${today()}`)) ?? "0");
   const monthSpend = parseFloat((await kv.get(`spend:${thisMonth()}`)) ?? "0");
-  if (daySpend >= budget.dailyUsd || monthSpend >= budget.monthlyUsd) {
+  // the monthly cap is the absolute stop — it fires (gracefully) just before
+  // the Anthropic workspace spend limit would hard-fail the key for everyone
+  if (monthSpend >= budget.monthlyUsd) {
     return { ok: false, reason: "daily_budget_exhausted" };
   }
-  if (skipIpCap) return { ok: true };
+  if (!isTester && daySpend >= budget.dailyUsd) {
+    return { ok: false, reason: "daily_budget_exhausted" };
+  }
+  if (isTester) return { ok: true };
   const ipKey = `ip:${await hashIp(ip, salt)}:${today()}`;
   const ipCount = parseInt((await kv.get(ipKey)) ?? "0", 10);
   if (isConversationStart) {

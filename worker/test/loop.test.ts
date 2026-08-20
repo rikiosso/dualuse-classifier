@@ -827,6 +827,27 @@ describe("trimmed lookup restoration", () => {
   });
 });
 
+describe("naked-verdict escalation — bold 'not listed' prose", () => {
+  it("markdown bold cannot smuggle a not-listed conclusion past the escalation", async () => {
+    const notListed = {
+      status: "not_listed",
+      entry_codes: [],
+      reasoning: [],
+      caveats: ["Indicative only; Art. 4/5 catch-alls may apply."],
+      definitions_used: [],
+    };
+    const client = new CannedClaudeClient([
+      textResp(
+        "This is straightforward: a standard office laptop for general business use is **not listed in Annex I** of Regulation (EU) 2021/821.",
+      ),
+      toolResp("final_answer", notListed, "tu_n1"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "a standard office laptop" }], MODELS, 10);
+    expect(result.type).toBe("verdict");
+    expect(result.verdict?.status).toBe("not_listed");
+  });
+});
+
 describe("naked-verdict escalation — 'meets all criteria' prose", () => {
   it("prose declaring all sub-criteria met escalates into the verdict stage", async () => {
     const client = new CannedClaudeClient([

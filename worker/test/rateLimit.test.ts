@@ -52,12 +52,19 @@ describe("estimateUsd", () => {
 });
 
 describe("tester bypass", () => {
-  it("skips only the per-IP cap; spend caps still gate", async () => {
+  it("skips the per-IP cap and daily pacing; the monthly stop gates everyone", async () => {
     const kv = new FakeKV();
     for (let i = 0; i < 5; i++) {
       expect((await checkBudget(kv, BUDGET, "1.2.3.4", "s", true, true)).ok).toBe(true);
     }
-    await recordSpend(kv, 0.31);
+    await recordSpend(kv, 0.31); // beyond the daily cap
+    // tester keeps testing; the public is paced for the day
+    expect((await checkBudget(kv, BUDGET, "1.2.3.4", "s", true, true)).ok).toBe(true);
+    expect(await checkBudget(kv, BUDGET, "5.6.7.8", "s", true)).toEqual({
+      ok: false,
+      reason: "daily_budget_exhausted",
+    });
+    await recordSpend(kv, BUDGET.monthlyUsd); // beyond the monthly stop
     const gated = await checkBudget(kv, BUDGET, "1.2.3.4", "s", true, true);
     expect(gated).toEqual({ ok: false, reason: "daily_budget_exhausted" });
   });
