@@ -624,6 +624,75 @@ describe("pathway validation hardening", () => {
   });
 });
 
+describe("formula-defined terms must be computed, never adopted", () => {
+  const ANNEXF: typeof ANNEX = {
+    ...ANNEX,
+    entries: [
+      ...ANNEX.entries.filter((e) => e.entry_code !== "3B501"),
+      {
+        entry_code: "3B501",
+        category: "3",
+        verbatim_text:
+          "3B501 Test equipment as follows:\n" +
+          "3B501.f.1.b.1 A light source wavelength equal to or longer than 193 nm;\n" +
+          "3B501.f.1.b.2 Capable of producing a pattern with a 'Minimum Resolvable Feature size' ('MRF') of 45 nm or less; and\n" +
+          "3B501.f.1.b Technical Notes: For the purposes of 3B501.f.1.b.: 1. The 'Minimum Resolvable Feature size' ('MRF') is calculated by the following formula: 'MRF' = wavelength × K factor / maximum numerical aperture where, the K factor = 0,25.",
+        parameters: [],
+        applicable_notes: [],
+      },
+    ],
+  };
+  const base = {
+    status: "listed",
+    entry_codes: ["3B501"],
+    caveats: ["Indicative only."],
+    definitions_used: [],
+  };
+
+  it("a claimed MRF without the computation is rejected; a shown calculation passes", async () => {
+    const { validateVerdict } = await import("../src/loop");
+    const adopted = {
+      ...base,
+      reasoning: [
+        {
+          entry_code: "3B501",
+          dotted_path: "3B501.f.1.b.2",
+          verbatim_quote: "Capable of producing a pattern with a 'Minimum Resolvable Feature size' ('MRF') of 45 nm or less; and",
+          explanation: "The user states the scanner produces a 38 nm MRF, below the 45 nm threshold.",
+          met: true,
+        },
+      ],
+    };
+    expect(validateVerdict(adopted as never, ANNEXF).join(" ")).toContain("formula-defined term");
+    const computed = {
+      ...base,
+      reasoning: [
+        {
+          ...adopted.reasoning[0],
+          explanation:
+            "Verified with the entry's own Technical Note formula (K factor = 0,25): MRF = (193 × 0.25) / 1.35 = 35.7 nm, at or below 45 nm.",
+        },
+      ],
+    };
+    expect(validateVerdict(computed as never, ANNEXF)).toEqual([]);
+    // rows that do not quote the defined term (e.g. the wavelength criterion)
+    // carry no computation duty
+    const wavelength = {
+      ...base,
+      reasoning: [
+        {
+          entry_code: "3B501",
+          dotted_path: "3B501.f.1.b.1",
+          verbatim_quote: "A light source wavelength equal to or longer than 193 nm;",
+          explanation: "193 nm equals the threshold.",
+          met: true,
+        },
+      ],
+    };
+    expect(validateVerdict(wavelength as never, ANNEXF)).toEqual([]);
+  });
+});
+
 describe("cross-reference guard (N.B. / SEE ALSO)", () => {
   const ANNEXX: typeof ANNEX = {
     ...ANNEX,

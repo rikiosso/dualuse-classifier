@@ -334,6 +334,33 @@ export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
       );
     }
   }
+  // FORMULA-DEFINED TERMS (rule 18, enforced in code): where a Technical Note
+  // on the cited provision or an ancestor defines a quoted term by formula,
+  // any row quoting that term must SHOW the computation. A live first-turn
+  // verdict adopted a user-claimed 38 nm MRF that the entry's own K=0.35
+  // formula contradicts at any real numerical aperture.
+  for (const r of v.reasoning) {
+    const entry = entryByCode(annex, r.entry_code);
+    if (!entry) continue;
+    const cited = (r.dotted_path || "").trim().toUpperCase();
+    if (!cited) continue;
+    const definedTerms: string[] = [];
+    for (const line of entry.verbatim_text.split("\n")) {
+      if (!/technical note/i.test(line) || !/formula/i.test(line)) continue;
+      const linePath = (line.split(/\s+/)[0] ?? "").toUpperCase();
+      if (!linePath.includes(".")) continue;
+      if (!(cited === linePath || cited.startsWith(linePath + "."))) continue;
+      for (const m of line.matchAll(/['‘]([^'’]{2,60})['’]/g)) definedTerms.push(m[1]);
+    }
+    if (!definedTerms.some((t) => (r.verbatim_quote || "").includes(t))) continue;
+    const expl = r.explanation || "";
+    if (!(/formula|calculat/i.test(expl) && /=/.test(expl))) {
+      problems.push(
+        `${r.dotted_path} turns on a formula-defined term (see its Technical Note) — compute the value from the underlying parameters with the entry's own formula and constants, showing the calculation (e.g. 'MRF = (wavelength × K)/NA = …') in the explanation. Never adopt a user-claimed value for a defined term; if an input such as the numerical aperture is missing, do not conclude — ask the user for it`,
+      );
+    }
+  }
+
   // N.B. / SEE ALSO cross-references carried by a cited provision (or an
   // ancestor of it) name sibling entries that catch similar equipment on
   // different criteria (3B001.f.1 ↔ 3B501.f: the same defined term with a
