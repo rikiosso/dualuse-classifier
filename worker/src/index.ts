@@ -71,10 +71,20 @@ function budgetOf(env: Env) {
 
 // GET /api/health — lets the page show corpus status and an exhausted budget
 // BEFORE a visitor types a whole description. Reads KV only; never the model.
-async function handleHealth(env: Env, deps: Deps, cors: Record<string, string>): Promise<Response> {
+// The tester key must count here exactly as it does on /api/chat: the page
+// disables its input on an unavailable health result, and a tester who is
+// exempt from daily pacing must not be locked out by the page chrome.
+async function handleHealth(
+  request: Request,
+  env: Env,
+  deps: Deps,
+  cors: Record<string, string>,
+): Promise<Response> {
   const day = new Date().toISOString().slice(0, 10);
   const month = day.slice(0, 7);
   const budget = budgetOf(env);
+  const testerKey = request.headers.get("x-tester-key");
+  const isTester = Boolean(env.TESTER_KEY && testerKey && testerKey === env.TESTER_KEY);
   const daySpend = parseFloat((await env.BUDGET_KV.get(`spend:${day}`)) ?? "0");
   const monthSpend = parseFloat((await env.BUDGET_KV.get(`spend:${month}`)) ?? "0");
   let corpus: { corpus_version: string; valid_from: string | null; entry_count: number } | null =
@@ -92,7 +102,7 @@ async function handleHealth(env: Env, deps: Deps, cors: Record<string, string>):
   return json(
     {
       ok: true,
-      assistant_available: daySpend < budget.dailyUsd && monthSpend < budget.monthlyUsd,
+      assistant_available: monthSpend < budget.monthlyUsd && (isTester || daySpend < budget.dailyUsd),
       corpus,
     },
     200,
@@ -114,7 +124,7 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
 
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/api/health") {
-    return handleHealth(env, deps, cors);
+    return handleHealth(request, env, deps, cors);
   }
   if (request.method !== "POST" || url.pathname !== "/api/chat") {
     return json({ type: "error", reason: "not_found" }, 404, cors);

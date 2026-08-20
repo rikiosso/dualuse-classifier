@@ -128,6 +128,29 @@ describe("handleRequest", () => {
     expect(data.corpus.corpus_version).toBe("02021R0821-20251115");
   });
 
+  it("health honours the tester key: daily pacing ignored, monthly stop kept", async () => {
+    const kv = new FakeKV();
+    kv.store.set(`spend:${new Date().toISOString().slice(0, 10)}`, "0.31"); // day exhausted
+    const testerEnv = { ...env(kv), TESTER_KEY: "tk" };
+    const withTester = await handleRequest(
+      new Request("https://worker.test/api/health", {
+        headers: { origin: ORIGIN, "x-tester-key": "tk" },
+      }),
+      testerEnv,
+      deps([]),
+    );
+    expect(((await withTester.json()) as { assistant_available: boolean }).assistant_available).toBe(true);
+    kv.store.set(`spend:${new Date().toISOString().slice(0, 7)}`, "99"); // month exhausted
+    const monthGated = await handleRequest(
+      new Request("https://worker.test/api/health", {
+        headers: { origin: ORIGIN, "x-tester-key": "tk" },
+      }),
+      testerEnv,
+      deps([]),
+    );
+    expect(((await monthGated.json()) as { assistant_available: boolean }).assistant_available).toBe(false);
+  });
+
   it("404s unknown paths and 400s bad JSON", async () => {
     const notFound = await handleRequest(
       new Request("https://worker.test/nope", { method: "POST", headers: { origin: ORIGIN } }),

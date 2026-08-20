@@ -36,7 +36,9 @@
   async function refreshStatus() {
     if (!workerReady) return;
     try {
-      const resp = await fetch(cfg.WORKER_URL.replace(/\/$/, "") + "/api/health");
+      const resp = await fetch(cfg.WORKER_URL.replace(/\/$/, "") + "/api/health", {
+        headers: testerKey ? { "x-tester-key": testerKey } : {},
+      });
       const h = await resp.json();
       if (!h.assistant_available) {
         showBudgetBanner(OFFLINE_MESSAGE, false);
