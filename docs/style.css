@@ -215,7 +215,7 @@ footer p:last-child { margin-bottom: 0; }
 footer a { color: inherit; }
 
 /* ---------- mobile (≤640px) ---------- */
-html, body { overflow-x: hidden; }
+html, body { overflow-x: clip; } /* clip, not hidden: hidden kills position:sticky */
 body { min-height: 100dvh; }
 .msg, .verdict { overflow-wrap: anywhere; }
 @media (max-width: 640px) {
