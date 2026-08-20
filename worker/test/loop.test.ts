@@ -1273,3 +1273,38 @@ describe("history trimming", () => {
     expect(String(first[0].content)).toContain("[trimmed");
   });
 });
+
+describe("post-verdict dead air", () => {
+  it("a stage-2 turn that asks nothing forces the pathway card", async () => {
+    const ANNEXD: typeof ANNEX = {
+      ...ANNEX,
+      geas: [{ id: "EU001", title: "EU001 — A", verbatim_text: "Valid for exports to the United States of America. Registration is required within 30 days of first use." }],
+      gea_common_list: "x",
+    };
+    const good = {
+      destination: "Brazil",
+      eligible_gea: "",
+      outcome: "individual_licence_required",
+      conditions_quoted: [{ gea_id: "EU001", verbatim_quote: "Valid for exports to the United States of America.", explanation: "Brazil is not an EU001 destination; no other GEA reaches 9A012." }],
+      caveats: ["Requires legal review."],
+    };
+    const client = new CannedClaudeClient([
+      textResp("I have all the facts needed. No further facts are needed from you — let me finalize this."),
+      toolResp("license_pathway", good, "tu_d2"),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEXD,
+      [
+        { role: "user", content: "my drone, all specs" },
+        ...VERDICT_EXCHANGE,
+        { role: "assistant", content: "Destination?" },
+        { role: "user", content: "Brazil, private company, outright sale" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("pathway");
+    expect(result.pathway?.outcome).toBe("individual_licence_required");
+  });
+});
