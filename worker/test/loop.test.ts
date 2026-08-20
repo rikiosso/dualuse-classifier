@@ -1055,6 +1055,38 @@ describe("tool-budget decision iteration and ask-fallback escalation", () => {
   });
 });
 
+describe("needs_expert with a missing user-suppliable parameter", () => {
+  it("bounces to a question instead of shipping the card", async () => {
+    const stuck = {
+      status: "needs_expert",
+      entry_codes: [],
+      reasoning: [],
+      caveats: [
+        "The 'dedicated chuck overlay' value has not been provided by the user, so 3B501.f.1.b cannot be concluded.",
+      ],
+      definitions_used: [],
+    };
+    const client = new CannedClaudeClient([
+      toolResp("final_answer", stuck),
+      toolResp("final_answer", stuck, "tu_2"),
+      textResp("What is the maximum dedicated chuck overlay value, in nanometres?"),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [
+        { role: "user", content: "my litho scanner" },
+        { role: "assistant", content: "What is the NA?" },
+        { role: "user", content: "1.35" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("question");
+    expect(result.text).toContain("chuck overlay");
+  });
+});
+
 describe("stage-2 convergence", () => {
   it("after a verdict and three answered turns, a fourth question is overridden by the pathway tool", async () => {
     const ANNEXP: typeof ANNEX = {

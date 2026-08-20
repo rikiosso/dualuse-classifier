@@ -580,9 +580,14 @@ export async function runTurn(
         const verdict = vUse.input as Verdict;
         const problems = validateVerdict(verdict, annex);
         transcript.push({ role: "assistant", content: vResp.content as Block[] });
-        if (problems.length === 0 && verdict.status === "needs_expert" && realUserTurns <= 1) {
-          // Giving up on the opening message is premature — a fully specified
-          // description may verdict on turn one, but "ask an expert" may not.
+        // needs_expert is premature on the opening message, and equally when
+        // the verdict's own text says a user-suppliable parameter is missing —
+        // a live card declared "cannot be concluded because the overlay has
+        // not been provided" instead of simply asking for the overlay.
+        const missingParam =
+          verdict.status === "needs_expert" &&
+          /not (yet |been )*?(provided|established|supplied|stated|given)/i.test(JSON.stringify(verdict));
+        if (problems.length === 0 && verdict.status === "needs_expert" && (realUserTurns <= 1 || missingParam)) {
           transcript.push({
             role: "user",
             content: [
@@ -591,8 +596,9 @@ export async function runTurn(
                 tool_use_id: vUse.id,
                 is_error: true,
                 content:
-                  "[system] needs_expert is premature on the user's opening message. Ask " +
-                  "the single most discriminating technical question instead (rule 2).",
+                  "[system] needs_expert is premature when the user can still supply the " +
+                  "missing fact. Ask the single most discriminating technical question " +
+                  "instead (rule 2).",
               },
             ],
           });

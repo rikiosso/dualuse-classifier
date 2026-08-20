@@ -15,7 +15,7 @@ DAILY_BUDGET_USD = "1.00"
 MONTHLY_BUDGET_USD = "14"
 IP_DAILY_CONVERSATIONS = "2"
 MAX_TURNS = "10"
-LOOP_MODEL = "claude-haiku-4-5"
+LOOP_MODEL = "claude-sonnet-5"
 VERDICT_MODEL = "claude-sonnet-5"
 
 # Secrets (never in this file):
