@@ -934,6 +934,15 @@ export async function runTurn(
       return producePathway();
     }
 
+    // POST-VERDICT DEAD AIR: a stage-2 turn that asks nothing and concludes
+    // nothing ("No further facts are needed — let me finalize this.") ends
+    // the turn with the user stranded. Asking nothing means it is time to
+    // produce the card; validation still fails closed if facts are missing.
+    if (!text.includes("?") && answersSinceVerdict() >= 1) {
+      transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
+      return producePathway();
+    }
+
     // ONE-QUESTION DISCIPLINE, enforced once per turn: a live run bundled
     // "scan or repeat?" (non-discriminating — the chapeau covers both) with
     // "system or component?" AFTER every controlling parameter was given.
@@ -992,15 +1001,6 @@ export async function runTurn(
     // destination, end-use and end-user several times over — a live run still
     // wanted a fourth optional question. Force the pathway tool instead; if
     // facts truly are missing, validation fails closed to a question anyway.
-    // POST-VERDICT DEAD AIR: a stage-2 turn that asks nothing and concludes
-    // nothing ("No further facts are needed — let me finalize this.") ends
-    // the turn with the user stranded. Asking nothing means it is time to
-    // produce the card; validation still fails closed if facts are missing.
-    if (!text.includes("?") && answersSinceVerdict() >= 1) {
-      transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
-      return producePathway();
-    }
-
     // PRE-VERDICT CONVERGENCE: six answered turns with no verdict is an
     // interview that will not land on its own — a live run declared "all the
     // technical facts are in hand" and asked another question anyway. Force
