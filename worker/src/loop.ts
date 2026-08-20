@@ -656,8 +656,9 @@ export async function runTurn(
         return producePathway();
       }
       // dead air applies here too: a fallback turn that asks nothing after a
-      // verdict strands the user — one more forced attempt with feedback
-      if (!text.includes("?") && answersSinceVerdict() >= 1 && !outOfTime()) {
+      // verdict strands the user — one more forced attempt with feedback.
+      // An entirely EMPTY reply is the extreme case of the same failure.
+      if ((!text.includes("?") || !text) && answersSinceVerdict() >= 1 && !outOfTime()) {
         askEscalated = true;
         transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
         return producePathway();
@@ -940,6 +941,19 @@ export async function runTurn(
       }
       transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
       return producePathway();
+    }
+
+    // EMPTY REPLY: a model turn with no text and no tool call must never
+    // reach the user as a blank bubble — seen live after a destination
+    // answer. Nudge once and continue; the loop bound still applies.
+    if (!text) {
+      transcript.push(
+        sysMsg(
+          "[system] Your reply was empty. Ask your single most important question, " +
+            "or conclude now via final_answer / license_pathway.",
+        ),
+      );
+      continue;
     }
 
     // POST-VERDICT DEAD AIR: a stage-2 turn that asks nothing and concludes
