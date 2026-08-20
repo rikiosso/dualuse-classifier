@@ -175,6 +175,7 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
         verdict: env.VERDICT_MODEL || "claude-sonnet-5",
       },
       parseInt(env.MAX_TURNS || "10", 10),
+      client, // question-gate judge: same key, cheap Haiku calls
     );
     await recordSpend(env.BUDGET_KV, result.usd - RESERVE_USD); // reconcile to actual
     return json(

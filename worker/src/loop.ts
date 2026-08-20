@@ -514,6 +514,7 @@ export async function runTurn(
   incoming: unknown,
   models: Models,
   maxUserTurns: number,
+  judge?: ClaudeClient,
 ): Promise<TurnResult> {
   const transcript = sanitizeMessages(incoming, maxUserTurns);
   // count REAL user turns (excludes tool_results and our "[system]" nudges)
@@ -593,6 +594,56 @@ export async function runTurn(
     });
   };
 
+  // QUESTION GATE: a question may only ship if it seeks a genuinely missing,
+  // outcome-relevant fact. A cheap judge reads the user's stated facts and
+  // the candidate question; REDUNDANT triggers one retry with a pointed
+  // nudge. Live catalog this kills: "confirm the NA again with more
+  // decimals", "measured or a marketing spec?", re-asked destination facts.
+  // The judge is optional (tests) and can never block a turn on failure.
+  let questionVetted = false;
+  const vetQuestion = async (candidate: string): Promise<boolean> => {
+    if (!judge || questionVetted) return true;
+    questionVetted = true;
+    const facts = transcript
+      .filter((m) => m.role === "user" && Array.isArray(m.content))
+      .map((m) =>
+        (m.content as Block[])
+          .filter((b) => b.type === "text")
+          .map((b) => String((b as { text?: string }).text ?? ""))
+          .join("\n"),
+      )
+      .filter((t) => t && !t.startsWith("[system]"))
+      .join("\n---\n");
+    try {
+      const resp = await judge.complete({
+        model: "claude-haiku-4-5",
+        max_tokens: 8,
+        system:
+          "You judge whether an interview question is worth asking in a technical-legal " +
+          "classification interview. Reply with exactly one word. REDUNDANT if the " +
+          "question is already answered by the user's stated facts, asks to confirm, " +
+          "re-state or refine the precision of a stated value, or if every plausible " +
+          "answer leads to the same outcome. Otherwise NEEDED. When unsure, NEEDED.",
+        messages: [
+          {
+            role: "user",
+            content: `FACTS THE USER HAS STATED:\n${facts}\n\nCANDIDATE QUESTION:\n${candidate}`,
+          },
+        ],
+        thinking: { type: "disabled" },
+      });
+      usd += estimateUsd("claude-haiku-4-5", resp.usage);
+      return !/REDUNDANT/i.test(textOf(resp));
+    } catch {
+      return true;
+    }
+  };
+  const QUESTION_GATE_NUDGE =
+    "[system] That question is already answered by the user's stated facts, or no " +
+    "answer to it would change the outcome. Re-read the user's messages, use the " +
+    "facts exactly as stated, and either ask for a DIFFERENT genuinely missing " +
+    "discriminating parameter or conclude now via final_answer / license_pathway.";
+
   const call = async (model: string, maxTokens: number, forced: false | string) => {
     const msgs = transcript.map((m, i) =>
       i === transcript.length - 1 ? { ...m, content: withCache(m.content) } : m,
@@ -663,6 +714,10 @@ export async function runTurn(
         transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
         return producePathway();
       }
+    }
+    if (!(await vetQuestion(text))) {
+      transcript.push(sysMsg(QUESTION_GATE_NUDGE));
+      return askOneQuestion();
     }
     return { type: "question", text, transcript, usd };
   };
@@ -1038,6 +1093,11 @@ export async function runTurn(
         transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
         return producePathway();
       }
+    }
+
+    if (!(await vetQuestion(text))) {
+      transcript.push(sysMsg(QUESTION_GATE_NUDGE));
+      continue;
     }
 
     return { type: "question", text, transcript, usd };

@@ -1308,3 +1308,42 @@ describe("post-verdict dead air", () => {
     expect(result.pathway?.outcome).toBe("individual_licence_required");
   });
 });
+
+describe("question gate", () => {
+  it("a REDUNDANT question is retried; the second question ships", async () => {
+    const client = new CannedClaudeClient([
+      textResp("Can you confirm the numerical aperture again, e.g. 1.35 or 1.350?"),
+      textResp("What is the dedicated chuck overlay value, in nanometres?"),
+    ]);
+    const judgeClient = new CannedClaudeClient([textResp("REDUNDANT")]);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [
+        { role: "user", content: "my litho scanner, NA 1.35" },
+        { role: "assistant", content: "What is the NA?" },
+        { role: "user", content: "1.35" },
+      ],
+      MODELS,
+      10,
+      judgeClient,
+    );
+    expect(result.type).toBe("question");
+    expect(result.text).toContain("chuck overlay");
+    // the second question is NOT re-vetted (one vet per turn) — judge spent
+    expect(judgeClient.requests).toHaveLength(1);
+    expect(JSON.stringify(judgeClient.requests[0].messages)).toContain("1.35");
+  });
+
+  it("a NEEDED question ships untouched; judge failure never blocks", async () => {
+    const client = new CannedClaudeClient([textResp("What is the light source wavelength, in nm?")]);
+    const judgeClient = new CannedClaudeClient([textResp("NEEDED")]);
+    const r1 = await runTurn(client, ANNEX, [{ role: "user", content: "my litho tool" }], MODELS, 10, judgeClient);
+    expect(r1.type).toBe("question");
+    expect(r1.text).toContain("wavelength");
+    const client2 = new CannedClaudeClient([textResp("What is the wavelength, in nm?")]);
+    const brokenJudge = new CannedClaudeClient([]); // throws when consulted
+    const r2 = await runTurn(client2, ANNEX, [{ role: "user", content: "my tool" }], MODELS, 10, brokenJudge);
+    expect(r2.type).toBe("question");
+  });
+});
