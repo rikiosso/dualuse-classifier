@@ -551,6 +551,48 @@ export async function runTurn(
   // get a tighter card budget; validation fail-closes if it truncates.
   const cardBudget = () => (Date.now() - startedAt > 20_000 ? 2000 : VERDICT_MAX_TOKENS);
 
+  // real user answers given after the recorded verdict — the stage-2
+  // convergence signal, needed by the main loop AND the ask-fallback
+  const answersSinceVerdict = () => {
+    const at = lastFinalAnswerIndex(transcript);
+    if (at < 0) return -1;
+    return transcript.filter(
+      (m, t) =>
+        t > at &&
+        m.role === "user" &&
+        Array.isArray(m.content) &&
+        m.content.some(
+          (b) => b.type === "text" && !String((b as { text?: string }).text ?? "").startsWith("[system]"),
+        ),
+    ).length;
+  };
+
+  // The forced pathway stage cannot fetch, so it must never be starved of
+  // quotable text: inject the FULL Annex II corpus as a synthetic lookup
+  // exchange once per turn. A live run looped five near-identical questions
+  // because every forced card was rejected for unquotable GEA text.
+  let geaInjected = false;
+  const ensureGeaContext = () => {
+    if (geaInjected) return;
+    geaInjected = true;
+    const ids = ["EU001", "EU002", "EU003", "EU004", "EU005", "EU006", "EU007", "EU008", "COMMON_LIST"];
+    const texts = ids
+      .map((id) => {
+        const t = geaScopeText(annex, id);
+        return t ? `=== ${id} ===\n${t}` : `No GEA ${id} in this corpus version.`;
+      })
+      .join("\n\n");
+    const useId = `srv_gea_${transcript.length}`;
+    transcript.push({
+      role: "assistant",
+      content: [{ type: "tool_use", id: useId, name: "lookup_gea", input: { ids } }],
+    });
+    transcript.push({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: useId, content: texts }],
+    });
+  };
+
   const call = async (model: string, maxTokens: number, forced: false | string) => {
     const msgs = transcript.map((m, i) =>
       i === transcript.length - 1 ? { ...m, content: withCache(m.content) } : m,
@@ -604,6 +646,14 @@ export async function runTurn(
         askEscalated = true;
         transcript.push(sysMsg(VERDICT_TOOL_NUDGE));
         return produceVerdict();
+      }
+      // stage-2 convergence applies to the fail-closed path too: the live
+      // five-question loop lived entirely inside this fallback, where the
+      // main loop's convergence check never runs
+      if (answersSinceVerdict() >= 3 && !outOfTime()) {
+        askEscalated = true;
+        transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
+        return producePathway();
       }
     }
     return { type: "question", text, transcript, usd };
@@ -711,6 +761,7 @@ export async function runTurn(
   // one retry, fail-closed to a question.
   const producePathway = async (): Promise<TurnResult> => {
     restoreTrimmedLookups(transcript, annex);
+    ensureGeaContext();
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt > 0 && outOfTime()) break;
       const pResp = await call(models.verdict, cardBudget(), "license_pathway");
@@ -951,16 +1002,7 @@ export async function runTurn(
       return produceVerdict();
     }
     if (verdictAt >= 0) {
-      const answersSince = transcript.filter(
-        (m, t) =>
-          t > verdictAt &&
-          m.role === "user" &&
-          Array.isArray(m.content) &&
-          m.content.some(
-            (b) =>
-              b.type === "text" && !String((b as { text?: string }).text ?? "").startsWith("[system]"),
-          ),
-      ).length;
+      const answersSince = answersSinceVerdict();
       if (answersSince >= 3) {
         transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
         return producePathway();

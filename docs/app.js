@@ -286,20 +286,27 @@
     if (switchToBrowse) setTimeout(() => showTab("browse"), 1800);
   }
 
-  form.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const text = input.value.trim();
-    if (!text) return;
+  // After a LISTED verdict the licensing stage continues automatically —
+  // the user should never be re-asked for facts already given. One silent
+  // continuation per conversation; further turns are the user's.
+  let autoContinued = false;
+  const AUTO_CONTINUE =
+    "Proceed to the licensing pathway using the facts already provided in this " +
+    "conversation. Ask only for genuinely missing facts.";
+
+  async function sendTurn(text, silent) {
     if (!workerReady) {
       showBudgetBanner("The assistant backend is not deployed yet — Browse mode works fully.", true);
       return;
     }
-    addBubble("user", text);
+    if (!silent) addBubble("user", text);
     transcript = transcript.concat([{ role: "user", content: text }]);
-    input.value = "";
     examplesEl.classList.add("hidden");
     sendBtn.disabled = true;
-    const thinking = addBubble("thinking", "Consulting Annex I…");
+    const thinking = addBubble(
+      "thinking",
+      silent ? "Determining the licensing pathway…" : "Consulting Annex I…",
+    );
     try {
       const resp = await fetch(cfg.WORKER_URL.replace(/\/$/, "") + "/api/chat", {
         method: "POST",
@@ -318,7 +325,11 @@
         transcript = data.messages;
         if (data.text) addBubble("assistant", data.text);
         addVerdictCard(data.verdict);
-        addBubble("assistant", "If you tell me the destination country and end-use, I can also determine the licensing pathway (EU General Export Authorisations).");
+        if (data.verdict.status === "listed" && !autoContinued) {
+          autoContinued = true;
+          sendBtn.disabled = false;
+          return sendTurn(AUTO_CONTINUE, true);
+        }
       } else if (data.type === "pathway") {
         transcript = data.messages;
         if (data.text) addBubble("assistant", data.text);
@@ -341,6 +352,14 @@
     } finally {
       sendBtn.disabled = false;
     }
+  }
+
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    sendTurn(text, false);
   });
 
   // ---------- browse ----------
