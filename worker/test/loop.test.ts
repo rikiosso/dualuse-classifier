@@ -689,6 +689,34 @@ describe("formula-defined terms must be computed, never adopted", () => {
       ],
     };
     expect(validateVerdict(computed as never, ANNEXF)).toEqual([]);
+    // a computation whose result EXCEEDS the "…or less" threshold cannot back
+    // a supporting row (live bug: "50,04 nm … falls at or below 45 nm")
+    const contradicted = {
+      ...base,
+      reasoning: [
+        {
+          ...adopted.reasoning[0],
+          explanation:
+            "Using the entry's own Technical Note formula: MRF = (193 × 0.35) / 1.35 = 50.04 nm, which falls at or below the 45 nm threshold.",
+        },
+      ],
+    };
+    expect(validateVerdict(contradicted as never, ANNEXF).join(" ")).toContain("EXCEEDS");
+    // ...but the same computation on a RULE-OUT row is exactly right
+    const ruledOut = {
+      ...base,
+      entry_codes: [],
+      status: "not_listed",
+      reasoning: [
+        {
+          ...adopted.reasoning[0],
+          met: false,
+          explanation:
+            "Using the entry's own Technical Note formula: MRF = (193 × 0.35) / 1.35 = 50.04 nm, which exceeds 45 nm — not met.",
+        },
+      ],
+    };
+    expect(validateVerdict(ruledOut as never, ANNEXF)).toEqual([]);
     // rows that do not quote the defined term (e.g. the wavelength criterion)
     // carry no computation duty
     const wavelength = {

@@ -370,6 +370,27 @@ export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
       problems.push(
         `${r.dotted_path} turns on a formula-defined term (see its Technical Note) — compute the value from the underlying parameters with the entry's own formula and constants, showing the calculation (e.g. 'MRF = (wavelength × K)/NA = …') in the explanation. Never adopt a user-claimed value for a defined term; if an input such as the numerical aperture is missing, do not conclude — ask the user for it`,
       );
+      continue;
+    }
+    // arithmetic consistency: a shown computation must AGREE with the claim —
+    // a live verdict computed 50,04 nm and declared it "at or below" a 45 nm
+    // threshold. Narrow, safe direction only: a supporting row whose computed
+    // value EXCEEDS an "…or less" threshold is a false conclusion. (European
+    // decimal commas normalised; the last "= N nm" is the final result.)
+    if (r.met !== false) {
+      const calcs = [...expl.matchAll(/=\s*(\d+(?:[.,]\d+)?)\s*nm/gi)];
+      const thr =
+        /(\d+(?:[.,]\d+)?)\s*nm\s+or\s+less/i.exec(r.verbatim_quote || "") ??
+        /less\s+than\s+or\s+equal\s+to\s+(\d+(?:[.,]\d+)?)\s*nm/i.exec(r.verbatim_quote || "");
+      if (calcs.length > 0 && thr) {
+        const value = parseFloat(calcs[calcs.length - 1][1].replace(",", "."));
+        const threshold = parseFloat(thr[1].replace(",", "."));
+        if (value > threshold) {
+          problems.push(
+            `${r.dotted_path}: the computed ${value} nm EXCEEDS the ${threshold} nm-or-less threshold — this criterion is NOT met. Mark it met=false, do not headline an entry on a failed computation, and if another entry's criteria need a missing parameter (e.g. 'dedicated chuck overlay'), ask the user for it instead of concluding`,
+          );
+        }
+      }
     }
   }
 
