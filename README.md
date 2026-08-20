@@ -1,7 +1,8 @@
 # EU Dual-Use Classifier
 
-**Describe a technology → get a guided, cited triage against Annex I of Regulation (EU)
-2021/821 — always in its latest consolidated version.**
+**Describe a technology and get it classified under Regulation (EU) 2021/821 — then see
+which export authorisation applies. Every quote verbatim, checked against the cited
+provision, always from the latest consolidated text.**
 
 An open-source, interview-style classification assistant for EU export controls. You describe
 what you build; it asks you **one targeted technical question at a time** (wavelengths,
@@ -31,7 +32,7 @@ flowchart LR
     B -->|publishes| C[annex.json\nGitHub Pages]
     C --> D[Cloudflare Worker]
     E[Static chat page\nGitHub Pages] -->|messages| D
-    D -->|"tool loop: lookup_entries,\nlookup_definitions, final_answer"| F[Claude\nHaiku 4.5 + Sonnet 5]
+    D -->|"tool loop: lookup_entries,\nlookup_definitions, lookup_gea,\nfinal_answer, license_pathway"| F[Claude Sonnet 5\n+ Haiku 4.5 question gate]
     D -->|verdict validated\nagainst corpus| E
 ```
 
@@ -43,16 +44,25 @@ flowchart LR
    `lookup_entries` tool (definitions via `lookup_definitions`).
 3. It interviews you — one discriminating technical question per turn, always quoting the
    threshold it is testing.
-4. A cheap model (Haiku 4.5) runs the interview; the moment it decides the facts are
-   sufficient, the **final verdict is written by a stronger model (Sonnet 5)** under a strict
-   JSON schema.
+4. Claude Sonnet 5 runs the interview and writes the verdicts under a strict JSON schema.
+   Every candidate question passes a **question gate** before it ships: deterministic
+   detectors block questions that echo a value you already stated, offer alternatives that
+   are the same number, or near-duplicate a question you already answered — and a cheap
+   judge model vetoes anything else that is already answered or could not change the
+   outcome. A blocked question becomes either a better question or a conclusion.
 5. **The server validates every verdict against the corpus before you see it**: every cited
    entry code must exist, every dotted path must belong to its entry, and every "verbatim
    quote" must actually appear **in the specific provision named by that dotted path** — not
    merely somewhere in the multi-page entry, which blocks a threshold or comparator lifted from
-   a neighbouring clause. Headlined codes must be backed by reasoning. A verdict that fails any
-   of these is rejected by code and the assistant keeps asking questions instead. No
-   unverifiable classification ever ships.
+   a neighbouring clause. Reasoning rows carry a `met` flag, so tested-and-ruled-out entries
+   appear on the card without being headlined; where a Technical Note defines a term by
+   formula (e.g. 'MRF'), the explanation must **show the calculation** and its result must
+   agree with the claimed outcome; N.B./SEE ALSO cross-references on the cited provision must
+   be engaged; a **not-listed** verdict must show the candidates it tested and ruled out; and
+   conclusions can only ever reach you as validated cards — prose verdicts, raw tool syntax,
+   empty replies and dead-air turns are all intercepted and escalated by code. A verdict that
+   fails any check is rejected and corrected or the assistant asks instead. No unverifiable
+   classification ever ships. (68 offline tests pin all of this.)
 
 ## Stage 2 — the licensing pathway
 
@@ -65,6 +75,10 @@ for destinations under an EU sanctions regime — **sanctions review required**,
 flags loudly and refuses to resolve: sanctions law is out of scope by design, and the server
 rejects any pathway that would green-light a sanctioned destination. Every pathway is an
 ab initio draft determination that **requires review by qualified counsel** before reliance.
+The licensing stage cannot run without a validated classification first, must sweep every
+GEA whose item scope could reach the entry (EU008 for any Category 5 Part 2 item), must
+quote conditions from the authorisation it grants, and renders into the **same card** as the
+classification — one ask, one determination.
 
 ## Cost design (why a public LLM demo doesn't bankrupt anyone)
 
@@ -81,8 +95,9 @@ Two layers, doing different jobs:
 - When the day's budget is spent, the page switches to **Browse mode** — a fully client-side
   search of the same Annex I dataset that costs nothing and never goes down.
 
-Prompt caching keeps a full conversation at roughly $0.09, so a $10/month key limit serves on
-the order of 100 full AI conversations a month; everyone beyond that gets Browse mode.
+Prompt caching keeps a full conversation in the tens of cents (the interview model is a
+config var — Sonnet-quality interviews cost more than Haiku ones), so a modest monthly key
+limit serves a meaningful number of full conversations; everyone beyond that gets Browse mode.
 (For a strictly atomic in-app counter, swap the KV counters for a Cloudflare Durable Object —
 noted as a follow-up; the key-level limit already makes the ceiling hard today.)
 
