@@ -70,6 +70,16 @@ const GOOD_VERDICT: Verdict = {
   definitions_used: [],
 };
 
+// a recorded verdict exchange — stage-2 tests need one, since the pathway
+// stage refuses to run without a validated final_answer in the transcript
+const VERDICT_EXCHANGE = [
+  {
+    role: "assistant",
+    content: [{ type: "tool_use", id: "tu_v0", name: "final_answer", input: GOOD_VERDICT }],
+  },
+  { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_v0", content: "Verdict recorded." }] },
+];
+
 describe("sanitizeMessages", () => {
   it("strips cache_control and rejects bad roles", () => {
     const msgs = sanitizeMessages(
@@ -393,6 +403,7 @@ describe("licensing pathway (stage 2)", () => {
       ANNEX2,
       [
         { role: "user", content: "my 3B501 tool, verdict was listed" },
+        ...VERDICT_EXCHANGE,
         { role: "assistant", content: "What is the destination?" },
         { role: "user", content: "United States, civil fab customer" },
       ],
@@ -429,6 +440,7 @@ describe("pathway prose escalation", () => {
       ANNEX2b,
       [
         { role: "user", content: "listed item, 3B501" },
+        ...VERDICT_EXCHANGE,
         { role: "assistant", content: "Destination?" },
         { role: "user", content: "United States" },
       ],
@@ -456,6 +468,7 @@ describe("pathway prose escalation", () => {
       ANNEX2c,
       [
         { role: "user", content: "my listed drone" },
+        ...VERDICT_EXCHANGE,
         { role: "assistant", content: "Destination?" },
         { role: "user", content: "Russia" },
       ],
@@ -529,6 +542,7 @@ describe("pathway validation hardening", () => {
       ANNEXS,
       [
         { role: "user", content: "my listed 3B501 scanner" },
+        ...VERDICT_EXCHANGE,
         { role: "assistant", content: "Destination?" },
         { role: "user", content: "Russia, civil fab customer" },
       ],
@@ -865,6 +879,7 @@ describe("trimmed lookup restoration", () => {
       ANNEXT,
       [
         { role: "user", content: "my listed 3B501 item" },
+        ...VERDICT_EXCHANGE,
         { role: "assistant", content: [{ type: "tool_use", id: "tu_g1", name: "lookup_gea", input: { ids: ["EU001"] } }] },
         { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_g1", content: TRIMMED }] },
         { role: "assistant", content: "Destination?" },
@@ -976,6 +991,7 @@ describe("tool-budget decision iteration and ask-fallback escalation", () => {
       ANNEXP,
       [
         { role: "user", content: "my listed 3B501 item" },
+        ...VERDICT_EXCHANGE,
         { role: "assistant", content: "Destination?" },
         { role: "user", content: "United States, civil fab, no adverse awareness" },
       ],
@@ -999,6 +1015,7 @@ describe("tool-budget decision iteration and ask-fallback escalation", () => {
       ANNEXP,
       [
         { role: "user", content: "my listed 3B501 item" },
+        ...VERDICT_EXCHANGE,
         { role: "assistant", content: "Destination?" },
         { role: "user", content: "United States, civil fab" },
       ],

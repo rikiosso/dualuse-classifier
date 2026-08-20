@@ -58,15 +58,27 @@ export class InvalidRequest extends Error {}
 
 // The pathway stage validates against the verdict that precedes it — recover
 // the most recent final_answer's entry_codes from the transcript.
-function verdictCodesIn(msgs: Msg[]): string[] {
+function lastFinalAnswerIndex(msgs: Msg[]): number {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
-    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
-    for (const b of m.content) {
-      if (b.type === "tool_use" && b.name === "final_answer") {
-        const codes = (b.input as { entry_codes?: unknown } | undefined)?.entry_codes;
-        return Array.isArray(codes) ? codes.map(String) : [];
-      }
+    if (
+      m.role === "assistant" &&
+      Array.isArray(m.content) &&
+      m.content.some((b) => b.type === "tool_use" && b.name === "final_answer")
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function verdictCodesIn(msgs: Msg[]): string[] {
+  const i = lastFinalAnswerIndex(msgs);
+  if (i < 0) return [];
+  for (const b of msgs[i].content as Block[]) {
+    if (b.type === "tool_use" && b.name === "final_answer") {
+      const codes = (b.input as { entry_codes?: unknown } | undefined)?.entry_codes;
+      return Array.isArray(codes) ? codes.map(String) : [];
     }
   }
   return [];
@@ -416,7 +428,9 @@ function looksVerdictConclusive(text: string): boolean {
     // [\s*]+ tolerates markdown bold: a live turn shipped "is **not listed
     // in Annex I**" as prose because the asterisks broke plain \s+ matching
     /\b(is|are)[\s*]+((therefore|clearly|thus)[\s*]+)?(listed|not[\s*_-]?listed)[\s*]+in[\s*]+annex[\s*]+i\b/i.test(text) ||
-    /classification result/i.test(text) ||
+    /classification (result|conclusion)/i.test(text) ||
+    // "…is listed under 3B001.f.1.b" — conclusion phrasing without "Annex I"
+    /\b(is|are|remains?)[\s*]+listed[\s*]+under\b[^\n]{0,40}\b\d[A-E]\d{3}\b/i.test(text) ||
     // live gap: "meets all three sub-criteria of 3B501.f.1.b" as prose, then
     // straight to the destination question — the verdict card never shipped
     (/\b(meets?|satisf(?:y|ies)|fulfil?s?)\b[^.\n]{0,60}\b(all|every|each|both)\b[^.\n]{0,60}\b(criteri|sub-criteri|conditions)/i.test(text) &&
@@ -507,6 +521,10 @@ export async function runTurn(
     if (!askEscalated) {
       if (looksPathwayConclusive(text) && realUserTurns > 1) {
         askEscalated = true;
+        if (lastFinalAnswerIndex(transcript) < 0) {
+          transcript.push(sysMsg(VERDICT_TOOL_NUDGE));
+          return produceVerdict();
+        }
         transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
         return producePathway();
       }
@@ -677,6 +695,27 @@ export async function runTurn(
 
     if (pathwayCall && !finalCall) {
       transcript.push({ role: "assistant", content: resp.content as Block[] });
+      // STRUCTURAL INVARIANT: no licensing pathway without a validated verdict
+      // card first. A live run classified in (inverted) prose, skipped
+      // final_answer entirely and went straight to stage 2 — the pathway would
+      // have been built on an unvalidated, wrong classification.
+      if (lastFinalAnswerIndex(transcript) < 0) {
+        transcript.push({
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: pathwayCall.id,
+              is_error: true,
+              content:
+                "[system] No validated classification exists yet — deliver the verdict " +
+                "through final_answer first (with the formula calculations shown); the " +
+                "licensing pathway comes after.",
+            },
+          ],
+        });
+        return produceVerdict();
+      }
       transcript.push({
         role: "user",
         content: [
@@ -734,6 +773,11 @@ export async function runTurn(
     // corpus validation entirely. Conclusive-looking prose is never returned:
     // it is escalated into the validated verdict stage instead.
     if (looksPathwayConclusive(text) && realUserTurns > 1) {
+      if (lastFinalAnswerIndex(transcript) < 0) {
+        // pathway talk before any validated verdict: classify first
+        transcript.push(sysMsg(VERDICT_TOOL_NUDGE));
+        return produceVerdict();
+      }
       transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
       return producePathway();
     }
@@ -811,17 +855,7 @@ export async function runTurn(
     // destination, end-use and end-user several times over — a live run still
     // wanted a fourth optional question. Force the pathway tool instead; if
     // facts truly are missing, validation fails closed to a question anyway.
-    let verdictAt = -1;
-    for (let t = 0; t < transcript.length; t++) {
-      const m = transcript[t];
-      if (
-        m.role === "assistant" &&
-        Array.isArray(m.content) &&
-        m.content.some((b) => b.type === "tool_use" && b.name === "final_answer")
-      ) {
-        verdictAt = t;
-      }
-    }
+    const verdictAt = lastFinalAnswerIndex(transcript);
     if (verdictAt >= 0) {
       const answersSince = transcript.filter(
         (m, t) =>
