@@ -9,6 +9,7 @@ export interface ClaudeRequest {
   messages: unknown[];
   tools?: unknown[];
   tool_choice?: unknown;
+  thinking?: unknown;
 }
 
 export interface ClaudeUsage {

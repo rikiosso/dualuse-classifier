@@ -22,8 +22,8 @@ import {
 import { estimateUsd } from "./rateLimit";
 
 const MAX_TOOL_ITERATIONS = 3;
-const LOOP_MAX_TOKENS = 1200;
-const VERDICT_MAX_TOKENS = 4000;
+const LOOP_MAX_TOKENS = 900;
+const VERDICT_MAX_TOKENS = 2800;
 // Quotes shorter than this are too weak to anchor — a 3-char fragment appears
 // everywhere. Real thresholds and provisions comfortably clear it.
 const MIN_QUOTE_CHARS = 12;
@@ -113,16 +113,23 @@ export function sanitizeMessages(raw: unknown, maxUserTurns: number): Msg[] {
     if (typeof content === "string") {
       blocks = [{ type: "text", text: content }];
     } else if (Array.isArray(content)) {
-      blocks = content.map((b: Record<string, unknown>) => {
-        if (typeof b?.type !== "string" || !allowedBlocks.has(b.type)) {
-          throw new InvalidRequest("bad content block");
-        }
-        const { cache_control: _dropped, ...rest } = b;
-        return rest as Block;
-      });
+      blocks = content
+        // thinking blocks (from a reasoning-enabled model turn) are dropped,
+        // not fatal — transcripts that carry them must stay continuable
+        .filter(
+          (b: Record<string, unknown>) => b?.type !== "thinking" && b?.type !== "redacted_thinking",
+        )
+        .map((b: Record<string, unknown>) => {
+          if (typeof b?.type !== "string" || !allowedBlocks.has(b.type)) {
+            throw new InvalidRequest("bad content block");
+          }
+          const { cache_control: _dropped, ...rest } = b;
+          return rest as Block;
+        });
     } else {
       throw new InvalidRequest("bad content");
     }
+    if (blocks.length === 0) continue; // e.g. a thinking-only assistant turn
     if (m.role === "user" && blocks.some((b) => b.type === "text")) userTurns += 1;
     out.push({ role: m.role, content: blocks });
   }
@@ -517,6 +524,16 @@ export async function runTurn(
   let usd = 0;
   let nudgedBundle = false;
   let askEscalated = false;
+  // Cloudflare's edge cancels requests around 100s — a forced 4k-token
+  // retry on top of a long turn crosses it and the user sees a dead reply.
+  // Past this elapsed budget, skip second forced attempts and fail closed
+  // (the quick question turn keeps the response comfortably under the limit).
+  const startedAt = Date.now();
+  const outOfTime = () => Date.now() - startedAt > 45_000;
+  // a 4k-token forced card alone takes ~60-80s to generate — affordable at
+  // the start of a turn, fatal after slow interview pre-steps. Slow turns
+  // get a tighter card budget; validation fail-closes if it truncates.
+  const cardBudget = () => (Date.now() - startedAt > 20_000 ? 2000 : VERDICT_MAX_TOKENS);
 
   const call = async (model: string, maxTokens: number, forced: false | string) => {
     const msgs = transcript.map((m, i) =>
@@ -528,6 +545,10 @@ export async function runTurn(
       system,
       messages: msgs,
       tools,
+      // models with reasoning enabled by default (Sonnet 5) emit thinking
+      // blocks that break textOf and poison the client-held transcript —
+      // this pipeline's structured discipline needs plain responses
+      thinking: { type: "disabled" },
       ...(forced ? { tool_choice: { type: "tool", name: forced } } : {}),
     });
     usd += estimateUsd(model, resp.usage);
@@ -547,6 +568,7 @@ export async function runTurn(
         i === transcript.length - 1 ? { ...m, content: withCache(m.content) } : m,
       ),
       tools,
+      thinking: { type: "disabled" },
       tool_choice: { type: "none" },
     });
     usd += estimateUsd(models.loop, resp.usage);
@@ -577,10 +599,21 @@ export async function runTurn(
     {
       restoreTrimmedLookups(transcript, annex);
       for (let attempt = 0; attempt < 2; attempt++) {
-        const vResp = await call(models.verdict, VERDICT_MAX_TOKENS, "final_answer");
+        if (attempt > 0 && outOfTime()) break;
+        const vResp = await call(models.verdict, cardBudget(), "final_answer");
         const vUse = toolUses(vResp).find((u) => u.name === "final_answer");
         if (!vUse) break;
-        const verdict = vUse.input as Verdict;
+        // the API does not hard-enforce required fields on tool inputs — a
+        // live call omitted an array and the validator crashed on .length.
+        // Missing fields become validation problems, never TypeErrors.
+        const verdict = {
+          status: "needs_expert",
+          entry_codes: [],
+          reasoning: [],
+          caveats: [],
+          definitions_used: [],
+          ...(vUse.input as Partial<Verdict>),
+        } as Verdict;
         const problems = validateVerdict(verdict, annex);
         transcript.push({ role: "assistant", content: vResp.content as Block[] });
         // needs_expert is premature on the opening message, and equally when
@@ -663,10 +696,22 @@ export async function runTurn(
   const producePathway = async (): Promise<TurnResult> => {
     restoreTrimmedLookups(transcript, annex);
     for (let attempt = 0; attempt < 2; attempt++) {
-      const pResp = await call(models.verdict, VERDICT_MAX_TOKENS, "license_pathway");
+      if (attempt > 0 && outOfTime()) break;
+      const pResp = await call(models.verdict, cardBudget(), "license_pathway");
       const pUse = toolUses(pResp).find((u) => u.name === "license_pathway");
       if (!pUse) break;
-      const pathway = normalizePathway(pUse.input as Pathway, annex);
+      // same field-defaulting discipline as the verdict stage — see above
+      const pathway = normalizePathway(
+        {
+          destination: "",
+          eligible_gea: "",
+          outcome: "individual_licence_required",
+          conditions_quoted: [],
+          caveats: [],
+          ...(pUse.input as Partial<Pathway>),
+        } as Pathway,
+        annex,
+      );
       const problems = validatePathway(pathway, annex, verdictCodesIn(transcript));
       transcript.push({ role: "assistant", content: pResp.content as Block[] });
       if (problems.length === 0) {

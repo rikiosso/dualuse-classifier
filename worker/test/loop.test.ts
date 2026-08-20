@@ -90,6 +90,27 @@ describe("sanitizeMessages", () => {
     expect(() => sanitizeMessages([{ role: "system", content: "x" }], 10)).toThrow(InvalidRequest);
   });
 
+  it("drops thinking blocks and thinking-only messages instead of failing", () => {
+    const msgs = sanitizeMessages(
+      [
+        { role: "user", content: "classify my tool" },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "internal reasoning", signature: "sig" },
+            { type: "text", text: "What is the wavelength?" },
+          ],
+        },
+        { role: "assistant", content: [{ type: "thinking", thinking: "only thinking", signature: "s" }] },
+        { role: "user", content: "193 nm" },
+      ],
+      10,
+    );
+    expect(msgs).toHaveLength(3); // thinking-only message dropped entirely
+    expect(JSON.stringify(msgs)).not.toContain("thinking");
+    expect(JSON.stringify(msgs)).toContain("wavelength");
+  });
+
   it("enforces the turn cap without KV", () => {
     const many = Array.from({ length: 12 }, () => ({ role: "user", content: "q" }));
     expect(() => sanitizeMessages(many, 10)).toThrow("conversation_too_long");
@@ -866,6 +887,43 @@ describe("lookup narration guard", () => {
     const result = await runTurn(client, ANNEX, [{ role: "user", content: "classify my laser tool" }], MODELS, 10);
     expect(result.type).toBe("question");
     expect(result.text).toContain("wavelength");
+  });
+});
+
+describe("missing tool-input fields never crash the validators", () => {
+  it("a pathway call without caveats/conditions is rejected with feedback, not a 502", async () => {
+    const ANNEXM: typeof ANNEX = {
+      ...ANNEX,
+      geas: [{ id: "EU001", title: "EU001 — A", verbatim_text: "1. Covers exports to the United States of America. 2. Registration is required within 30 days of first use." }],
+      gea_common_list: "x",
+    };
+    const incomplete = { destination: "United States", eligible_gea: "EU001", outcome: "gea_available" };
+    const good = {
+      destination: "United States",
+      eligible_gea: "EU001",
+      outcome: "gea_available",
+      conditions_quoted: [{ gea_id: "EU001", verbatim_quote: "Registration is required within 30 days", explanation: "condition" }],
+      caveats: ["Requires legal review."],
+    };
+    const client = new CannedClaudeClient([
+      toolResp("license_pathway", incomplete),
+      toolResp("license_pathway", incomplete, "tu_p2"), // attempt 1: rejected, no crash
+      toolResp("license_pathway", good, "tu_p3"),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEXM,
+      [
+        { role: "user", content: "my listed 3B501 item" },
+        ...VERDICT_EXCHANGE,
+        { role: "assistant", content: "Destination?" },
+        { role: "user", content: "United States, civil fab" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("pathway");
+    expect(result.pathway?.caveats.length).toBeGreaterThan(0);
   });
 });
 
