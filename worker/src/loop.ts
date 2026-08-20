@@ -549,7 +549,7 @@ export async function runTurn(
   // a 4k-token forced card alone takes ~60-80s to generate — affordable at
   // the start of a turn, fatal after slow interview pre-steps. Slow turns
   // get a tighter card budget; validation fail-closes if it truncates.
-  const cardBudget = () => (Date.now() - startedAt > 20_000 ? 2000 : VERDICT_MAX_TOKENS);
+  const cardBudget = () => (Date.now() - startedAt > 20_000 ? 2400 : VERDICT_MAX_TOKENS);
 
   // real user answers given after the recorded verdict — the stage-2
   // convergence signal, needed by the main loop AND the ask-fallback
@@ -651,6 +651,13 @@ export async function runTurn(
       // five-question loop lived entirely inside this fallback, where the
       // main loop's convergence check never runs
       if (answersSinceVerdict() >= 3 && !outOfTime()) {
+        askEscalated = true;
+        transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
+        return producePathway();
+      }
+      // dead air applies here too: a fallback turn that asks nothing after a
+      // verdict strands the user — one more forced attempt with feedback
+      if (!text.includes("?") && answersSinceVerdict() >= 1 && !outOfTime()) {
         askEscalated = true;
         transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
         return producePathway();
@@ -799,6 +806,7 @@ export async function runTurn(
           usd,
         };
       }
+      console.log("pathway rejected:", problems.join("; ").slice(0, 300));
       transcript.push({
         role: "user",
         content: [
