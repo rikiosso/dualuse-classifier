@@ -634,6 +634,7 @@ describe("cross-reference guard (N.B. / SEE ALSO)", () => {
         category: "3",
         verbatim_text:
           "3B001 Semiconductor manufacturing equipment as follows:\n" +
+          "3B001 N.B. SEE ALSO 4A003\n" +
           "3B001.f.1 Align and expose step and scan equipment having any of the following:\n" +
           "3B001.f.1.b Capable of producing a pattern with a 'Minimum Resolvable Feature size' (MRF) of 45 nm or less;\n" +
           "3B001.f.1 N.B. SEE ALSO 3B501.f.\n" +
@@ -671,6 +672,8 @@ describe("cross-reference guard (N.B. / SEE ALSO)", () => {
         "3B501.f (cross-referenced) not assessed: its 'dedicated chuck overlay' criterion was not provided.",
       ],
     };
+    // ...and the ROOT-level "3B001 N.B. SEE ALSO 4A003" imposes nothing:
+    // the verdict never mentions 4A003 yet validates clean
     expect(validateVerdict(engaged as never, ANNEXX)).toEqual([]);
   });
 

@@ -352,7 +352,11 @@ export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
       for (const line of entry.verbatim_text.split("\n")) {
         if (!/\bN\.B\.|SEE ALSO/i.test(line)) continue;
         const linePath = (line.split(/\s+/)[0] ?? "").toUpperCase();
-        if (!linePath || !(cited === linePath || cited.startsWith(linePath + "."))) continue;
+        // root-level N.B.s ("3B001 N.B. SEE ALSO 2B226") span a whole entry —
+        // generic context, not an obligation; requiring them taught the model
+        // to interview users about isotope separators on a litho scanner
+        if (!linePath.includes(".")) continue;
+        if (!(cited === linePath || cited.startsWith(linePath + "."))) continue;
         for (const code of line.toUpperCase().match(/\b\d[A-E]\d{3}\b/g) ?? []) {
           if (code === r.entry_code.toUpperCase() || flagged.has(code)) continue;
           if (!entryByCode(annex, code)) continue;

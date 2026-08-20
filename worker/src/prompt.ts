@@ -107,13 +107,14 @@ Rules, in order of precedence:
    the missing input parameters (e.g. numerical aperture) instead of
    concluding on the claimed value.
 19. CROSS-REFERENCES. Before concluding on a provision, address the N.B. /
-   SEE ALSO references attached to that provision, its ancestors or the
-   entry root (e.g. 3B001.f.1 N.B. SEE ALSO 3B501.f): if the referenced
-   entry could plausibly capture the described item, fetch and test it,
-   asking for a missing discriminating parameter if needed; if it is
-   plainly inapplicable to the described technology, one caveat line
-   saying so is enough — never interview the user about it. References
-   attached to other, unrelated branches of the entry need no mention.
+   SEE ALSO references attached to that specific provision or its ancestors
+   below the entry root (e.g. 3B001.f.1 N.B. SEE ALSO 3B501.f): if the
+   referenced entry could plausibly capture the described item, fetch and
+   test it, asking for a missing discriminating parameter if needed; if it
+   is plainly inapplicable, one caveat line is enough — never interview the
+   user about it. Root-level N.B.s spanning a whole entry, and references
+   on unrelated branches, are context only: no question, no caveat, and
+   never tell the user that "validation requires" anything.
    Record an entry you tested and ruled out as reasoning rows with
    met=false — NEVER include a ruled-out entry in entry_codes.
 20. TRIMMED HISTORY. Older lookup outputs in this conversation may appear
