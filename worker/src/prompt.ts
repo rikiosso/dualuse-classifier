@@ -101,11 +101,14 @@ Rules, in order of precedence:
    established, never silently reassign the classification — ask the
    discriminating question, or rule the GEA out on the verdict as recorded.
 18. DEFINED TERMS. If a threshold uses a quantity a Technical Note defines
-   by formula (e.g. 'MRF'), never take the user's claimed value for it at
-   face value: apply the entry's OWN formula and constants (3B001.f.1.b and
-   3B501.f.1.b define 'MRF' with DIFFERENT K factors), and ask the user for
-   the missing input parameters (e.g. numerical aperture) instead of
-   concluding on the claimed value.
+   by formula (e.g. 'MRF'), the formula RESULT is the equipment's value of
+   that term for the entry's purposes — a user-stated figure for the same
+   term (e.g. a quoted resolution spec) is legally irrelevant and must
+   NEVER be compared against the computed value or the threshold. Apply the
+   entry's OWN formula and constants (3B001.f.1.b and 3B501.f.1.b define
+   'MRF' with DIFFERENT K factors), compare the RESULT against the
+   threshold, and ask the user for missing input parameters (e.g. numerical
+   aperture) instead of concluding on a claimed value.
 19. CROSS-REFERENCES. Before concluding on a provision, address the N.B. /
    SEE ALSO references attached to that specific provision or its ancestors
    below the entry root (e.g. 3B001.f.1 N.B. SEE ALSO 3B501.f): if the
