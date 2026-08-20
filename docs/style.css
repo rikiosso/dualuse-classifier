@@ -181,6 +181,7 @@ main { width: 100%; max-width: 46rem; margin: 0 auto; padding: 0 1.25rem; flex: 
   border-radius: 999px; background: none; color: rgba(27, 28, 28, .7); cursor: pointer; font-size: .85rem;
 }
 .verdict .copy:hover { border-color: var(--espresso); color: var(--espresso); }
+.pathway-divider { border-top: 1px solid rgba(27, 28, 28, .18); margin: 1rem 0 .9rem; }
 .review-cta { margin: .7rem 0 0; font-size: .95rem; }
 .review-cta a { font-weight: 700; }
 

@@ -212,12 +212,30 @@
     card.appendChild(copyBtn);
 
     messagesEl.appendChild(card);
+    lastVerdictCard = card; // the licensing pathway merges into this card
     card.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
+  // The licensing determination renders INSIDE the classification card when
+  // one exists — one ask, one card. Falls back to a standalone card only if
+  // no verdict card is on screen.
+  let lastVerdictCard = null;
+
   function addPathwayCard(pw) {
-    const card = document.createElement("div");
-    card.className = "verdict pathway " + pw.outcome;
+    let card;
+    if (lastVerdictCard) {
+      card = lastVerdictCard;
+      lastVerdictCard = null;
+      card.classList.add("pathway", pw.outcome);
+      const oldCopy = card.querySelector(".copy");
+      if (oldCopy) oldCopy.remove();
+      const divider = document.createElement("div");
+      divider.className = "pathway-divider";
+      card.appendChild(divider);
+    } else {
+      card = document.createElement("div");
+      card.className = "verdict pathway " + pw.outcome;
+    }
     const h = document.createElement("h3");
     h.textContent = "Licensing pathway";
     card.appendChild(h);
@@ -276,7 +294,7 @@
     review.appendChild(a);
     card.appendChild(review);
 
-    messagesEl.appendChild(card);
+    if (!card.parentNode) messagesEl.appendChild(card);
     card.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
