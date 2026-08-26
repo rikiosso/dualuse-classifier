@@ -134,6 +134,17 @@ export function sanitizeMessages(raw: unknown, maxUserTurns: number): Msg[] {
             throw new InvalidRequest("bad content block");
           }
           const { cache_control: _dropped, ...rest } = b;
+          // cache_control can also ride on blocks nested inside a tool_result's
+          // content array — the API honours those, so strip them too
+          if (Array.isArray(rest.content)) {
+            rest.content = (rest.content as unknown[]).map((n) =>
+              n && typeof n === "object"
+                ? (({ cache_control: _c, ...r }: Record<string, unknown>) => r)(
+                    n as Record<string, unknown>,
+                  )
+                : n,
+            );
+          }
           return rest as Block;
         });
     } else {
@@ -164,7 +175,9 @@ export function sanitizeMessages(raw: unknown, maxUserTurns: number): Msg[] {
     if (m.role === "user" && isRealUserText) userTurns += 1;
     out.push({ role: m.role, content: blocks });
   }
-  if (out[0].role !== "user") throw new InvalidRequest("first message must be user");
+  if (out.length === 0 || out[0].role !== "user") {
+    throw new InvalidRequest("first message must be user");
+  }
   if (userTurns > maxUserTurns) throw new InvalidRequest("conversation_too_long");
   if (JSON.stringify(out).length > MAX_HISTORY_CHARS) trimOldToolResults(out);
   if (JSON.stringify(out).length > MAX_HISTORY_CHARS) {

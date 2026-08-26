@@ -17,6 +17,7 @@ export interface Budget {
   dailyUsd: number;
   monthlyUsd: number;
   ipDailyConversations: number;
+  ipDailyRequests?: number; // absent = per-request metering off
 }
 
 const DAY_TTL = 26 * 60 * 60;
@@ -54,7 +55,16 @@ export async function checkBudget(
     return { ok: false, reason: "daily_budget_exhausted" };
   }
   if (isTester) return { ok: true };
-  const ipKey = `ip:${await hashIp(ip, salt)}:${today()}`;
+  const ipHash = await hashIp(ip, salt);
+  // every request buys a paid model turn, so continuations are metered too —
+  // a forged "continuation" history must not ride past the fairness cap free
+  if (budget.ipDailyRequests !== undefined) {
+    const reqKey = `ipreq:${ipHash}:${today()}`;
+    const reqCount = parseInt((await kv.get(reqKey)) ?? "0", 10);
+    if (reqCount >= budget.ipDailyRequests) return { ok: false, reason: "rate_limited" };
+    await kv.put(reqKey, String(reqCount + 1), { expirationTtl: DAY_TTL });
+  }
+  const ipKey = `ip:${ipHash}:${today()}`;
   const ipCount = parseInt((await kv.get(ipKey)) ?? "0", 10);
   if (isConversationStart) {
     if (ipCount >= budget.ipDailyConversations) return { ok: false, reason: "rate_limited" };

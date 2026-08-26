@@ -38,6 +38,31 @@ describe("budget gates", () => {
   });
 });
 
+describe("per-IP request meter", () => {
+  const METERED = { ...BUDGET, ipDailyRequests: 3 };
+
+  it("caps total requests per IP even for forged continuations", async () => {
+    const kv = new FakeKV();
+    expect((await checkBudget(kv, METERED, "1.2.3.4", "s", true)).ok).toBe(true);
+    // continuations never count as conversation starts, but they still meter
+    expect((await checkBudget(kv, METERED, "1.2.3.4", "s", false)).ok).toBe(true);
+    expect((await checkBudget(kv, METERED, "1.2.3.4", "s", false)).ok).toBe(true);
+    expect(await checkBudget(kv, METERED, "1.2.3.4", "s", false)).toEqual({
+      ok: false,
+      reason: "rate_limited",
+    });
+    // a different visitor is unaffected
+    expect((await checkBudget(kv, METERED, "5.6.7.8", "s", false)).ok).toBe(true);
+  });
+
+  it("testers are not metered", async () => {
+    const kv = new FakeKV();
+    for (let i = 0; i < 5; i++) {
+      expect((await checkBudget(kv, METERED, "1.2.3.4", "s", false, true)).ok).toBe(true);
+    }
+  });
+});
+
 describe("estimateUsd", () => {
   it("prices cache reads at a tenth and writes at 1.25x", () => {
     const usd = estimateUsd("claude-haiku-4-5", {

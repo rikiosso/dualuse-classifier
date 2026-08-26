@@ -129,6 +129,36 @@ describe("sanitizeMessages", () => {
     const many = Array.from({ length: 12 }, (_, i) => ({ role: "user", content: `q${i}` }));
     expect(() => sanitizeMessages(many, 10)).toThrow("conversation_too_long");
   });
+
+  it("rejects a transcript that sanitizes to nothing instead of crashing", () => {
+    expect(() => sanitizeMessages([{ role: "user", content: [] }], 10)).toThrow(InvalidRequest);
+    expect(() =>
+      sanitizeMessages(
+        [{ role: "assistant", content: [{ type: "thinking", thinking: "x", signature: "s" }] }],
+        10,
+      ),
+    ).toThrow(InvalidRequest);
+  });
+
+  it("strips cache_control nested inside tool_result content", () => {
+    const msgs = sanitizeMessages(
+      [
+        { role: "user", content: "opener" },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "t1",
+              content: [{ type: "text", text: "law text", cache_control: { type: "ephemeral" } }],
+            },
+          ],
+        },
+      ],
+      10,
+    );
+    expect(JSON.stringify(msgs)).not.toContain("cache_control");
+  });
 });
 
 describe("validateVerdict", () => {

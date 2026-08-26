@@ -57,7 +57,11 @@ function corsHeaders(origin: string | null, allowed: string[]): Record<string, s
 function json(data: unknown, status: number, headers: Record<string, string>): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json", ...headers },
+    headers: {
+      "content-type": "application/json",
+      "x-content-type-options": "nosniff",
+      ...headers,
+    },
   });
 }
 
@@ -66,6 +70,10 @@ function budgetOf(env: Env) {
     dailyUsd: parseFloat(env.DAILY_BUDGET_USD || "0.30"),
     monthlyUsd: parseFloat(env.MONTHLY_BUDGET_USD || "10"),
     ipDailyConversations: parseInt(env.IP_DAILY_CONVERSATIONS || "2", 10),
+    // per-IP request meter: 2x headroom over a full legitimate day
+    // (conversations x turns) so error retries never lock a real user out
+    ipDailyRequests:
+      parseInt(env.IP_DAILY_CONVERSATIONS || "2", 10) * parseInt(env.MAX_TURNS || "10", 10) * 2,
   };
 }
 
