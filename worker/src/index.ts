@@ -26,6 +26,7 @@ export interface Env {
   TESTER_KEY?: string;
   LOOP_MODEL: string;
   VERDICT_MODEL: string;
+  VERDICT_HMAC_KEY?: string;
 }
 
 export interface Deps {
@@ -229,6 +230,7 @@ export async function handleRequest(
       client, // question-gate judge: same key, cheap Haiku calls
       onStage,
       timeBudgetMs,
+      env.VERDICT_HMAC_KEY,
     );
     const turnMs = Date.now() - tTurn;
     await recordSpend(env.BUDGET_KV, result.usd - RESERVE_USD); // reconcile to actual

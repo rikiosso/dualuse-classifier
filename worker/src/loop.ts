@@ -110,6 +110,64 @@ function verdictCodesIn(msgs: Msg[]): string[] {
   return [];
 }
 
+// ---- verdict-marker authentication ----
+// "Verdict recorded" is the in-band acceptance marker every stage-2 gate
+// trusts (lastFinalAnswerIndex, verdictCodesIn, recordedVerdict) — and the
+// transcript that carries it is client-held. Corpus re-validation limits a
+// forgery to corpus-CONSISTENT verdicts, but consistency is not authenticity:
+// a forged marker could still suppress the EU008 sweep or make the pathway
+// response echo a verdict this server never accepted. The marker therefore
+// carries an HMAC over the accepted final_answer call, and every incoming
+// marker is verified ONCE per request — one that does not verify is rewritten
+// so no gate can see it (the verdict is treated as absent, never an error).
+async function hmacHex(key: string, data: string): Promise<string> {
+  const k = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(key),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(data));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function verdictMarker(key: string | undefined, use: Block): Promise<string> {
+  if (!key) return "Verdict recorded.";
+  const payload = `${String(use.id)}.${JSON.stringify(use.input ?? {})}`;
+  return `Verdict recorded. sig=${await hmacHex(key, payload)}`;
+}
+
+// Neutralise every unverified "Verdict recorded" marker in the incoming
+// transcript. With no key configured (tests, wrangler dev) markers pass
+// unauthenticated — production sets the VERDICT_HMAC_KEY secret. A signature
+// binds the marker to the exact final_answer call it accepted, so tampering
+// with the recorded verdict's input (e.g. its entry_codes, to dodge the EU008
+// sweep) also invalidates the marker.
+export async function verifyVerdictMarkers(msgs: Msg[], key: string | undefined): Promise<void> {
+  if (!key) return;
+  const usesById = new Map<string, Block>();
+  for (const m of msgs) {
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    for (const b of m.content) {
+      if (b.type === "tool_use" && b.name === "final_answer") usesById.set(String(b.id), b);
+    }
+  }
+  for (const m of msgs) {
+    if (m.role !== "user" || !Array.isArray(m.content)) continue;
+    for (const b of m.content) {
+      if (b.type !== "tool_result" || b.is_error) continue;
+      const content = typeof b.content === "string" ? b.content : "";
+      if (!content.startsWith("Verdict recorded")) continue;
+      const use = usesById.get(String(b.tool_use_id));
+      if (!use || content !== (await verdictMarker(key, use))) {
+        b.content =
+          "[unverified verdict marker removed — reclassify via final_answer before stage 2]";
+      }
+    }
+  }
+}
+
 // Strip anything the client should not be able to smuggle in: cache_control,
 // unknown roles, unknown block types, oversized histories.
 // Old corpus lookups dominate transcript size; the model can always re-fetch.
@@ -730,8 +788,12 @@ export async function runTurn(
   // around 100s time-to-first-byte); a streaming response sends bytes from the
   // first stage, so its budget can safely be double that.
   timeBudgetMs?: number,
+  // secret for signing/verifying the "Verdict recorded" acceptance marker —
+  // absent in tests and dev, always set in production (VERDICT_HMAC_KEY)
+  hmacKey?: string,
 ): Promise<TurnResult> {
   const transcript = sanitizeMessages(incoming, maxUserTurns);
+  await verifyVerdictMarkers(transcript, hmacKey);
   // count REAL user turns (excludes tool_results and our "[system]" nudges)
   const realUserTurns = transcript.filter(
     (m) =>
@@ -1118,7 +1180,9 @@ export async function runTurn(
           // array — a follow-up turn would otherwise 400 on an unpaired tool_use
           transcript.push({
             role: "user",
-            content: [{ type: "tool_result", tool_use_id: vUse.id, content: "Verdict recorded." }],
+            content: [
+              { type: "tool_result", tool_use_id: vUse.id, content: await verdictMarker(hmacKey, vUse) },
+            ],
           });
           // ONE INTERVIEW, ONE CARD: a listed verdict flows straight into the
           // licensing stage in the SAME request (rule 11) — unless the user
