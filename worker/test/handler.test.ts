@@ -170,3 +170,22 @@ describe("handleRequest", () => {
     expect(bad.status).toBe(400);
   });
 });
+
+describe("exhausted API credit", () => {
+  it("maps Anthropic's credit-balance refusal to the budget-exhausted banner, not a raw 502", async () => {
+    const broke: Deps = {
+      annex: async () => ANNEX,
+      client: () => ({
+        complete: async () => {
+          throw new Error(
+            'anthropic 400: {"type":"error","error":{"type":"invalid_request_error",' +
+              '"message":"Your credit balance is too low to access the Anthropic API."}}',
+          );
+        },
+      }),
+    };
+    const resp = await handleRequest(chatRequest(), env(), broke);
+    expect(resp.status).toBe(429);
+    expect(await resp.json()).toEqual({ type: "error", reason: "daily_budget_exhausted" });
+  });
+});

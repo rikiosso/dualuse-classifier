@@ -152,6 +152,7 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
 
   const testerKey = request.headers.get("x-tester-key");
   const isTester = Boolean(env.TESTER_KEY && testerKey && testerKey === env.TESTER_KEY);
+  const t0 = Date.now();
   const gate = await checkBudget(
     env.BUDGET_KV,
     budgetOf(env),
@@ -160,6 +161,7 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
     isStart,
     isTester,
   );
+  const gateMs = Date.now() - t0;
   if (!gate.ok) return json({ type: "error", reason: gate.reason }, 429, cors);
 
   // Reserve a conservative worst-case cost BEFORE the model runs, so the spend
@@ -169,11 +171,16 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
   // the AUTHORITATIVE hard ceiling is the dedicated API key's monthly spend
   // limit, enforced server-side by Anthropic. See README.)
   const RESERVE_USD = 0.15;
+  const tReserve = Date.now();
   await recordSpend(env.BUDGET_KV, RESERVE_USD);
+  const reserveMs = Date.now() - tReserve;
 
   try {
+    const tAnnex = Date.now();
     const annex = await deps.annex(env);
+    const annexMs = Date.now() - tAnnex;
     const client = deps.client(env);
+    const tTurn = Date.now();
     const result = await runTurn(
       client,
       annex,
@@ -185,7 +192,20 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
       parseInt(env.MAX_TURNS || "10", 10),
       client, // question-gate judge: same key, cheap Haiku calls
     );
+    const turnMs = Date.now() - tTurn;
     await recordSpend(env.BUDGET_KV, result.usd - RESERVE_USD); // reconcile to actual
+    // stage-by-stage latency: always in the logs (wrangler tail), returned in
+    // the body ONLY for the tester key — public responses stay trim
+    const perf = {
+      total_ms: Date.now() - t0,
+      gate_ms: gateMs,
+      reserve_ms: reserveMs,
+      annex_ms: annexMs,
+      turn_ms: turnMs,
+      type: result.type,
+      stages: result.timings,
+    };
+    console.log("perf", JSON.stringify(perf));
     return json(
       {
         type: result.type,
@@ -195,6 +215,7 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
         ...(result.pathway
           ? { pathway: { ...result.pathway, disclaimer: PATHWAY_DISCLAIMER } }
           : {}),
+        ...(isTester ? { timings: perf } : {}),
       },
       200,
       cors,
@@ -210,6 +231,13 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
     // a model may have run before the throw — KEEP the reservation (never refund
     // on an upstream error) so mid-loop token burn still counts against the cap
     console.error("turn failed:", err);
+    // the workspace spend cap is the authoritative ceiling (see README) — when
+    // Anthropic refuses for exhausted credit, that IS the budget stop, and the
+    // page already shows a polite offline banner for this reason. Without the
+    // mapping every visitor sees a raw "something went wrong" instead.
+    if (err instanceof Error && /credit balance is too low/i.test(err.message)) {
+      return json({ type: "error", reason: "daily_budget_exhausted" }, 429, cors);
+    }
     return json({ type: "error", reason: "upstream_error" }, 502, cors);
   }
 }

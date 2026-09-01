@@ -39,6 +39,18 @@ export interface Models {
 type Block = { type: string; [k: string]: unknown };
 type Msg = { role: "user" | "assistant"; content: Block[] | string };
 
+// One entry per model call, in order — the sequential chain IS the latency
+// story, so every stage records its wall time and token/cache split.
+export interface StageTiming {
+  stage: string;
+  model: string;
+  ms: number;
+  in: number;
+  out: number;
+  cache_read: number;
+  cache_write: number;
+}
+
 export interface TurnResult {
   type: "question" | "verdict" | "pathway";
   text: string;
@@ -46,6 +58,7 @@ export interface TurnResult {
   verdict?: Verdict & { corpus_version: string; corpus_sha256: string; prompt_sha256: string };
   pathway?: Pathway & { corpus_version: string; corpus_sha256: string; prompt_sha256: string };
   usd: number;
+  timings: StageTiming[];
 }
 
 // Destinations whose sanctions regimes this tool must FLAG and never resolve —
@@ -688,6 +701,18 @@ export async function runTurn(
     LICENSE_PATHWAY_TOOL,
   ];
   let usd = 0;
+  const timings: StageTiming[] = [];
+  const record = (stage: string, model: string, t0: number, resp: ClaudeResponse) => {
+    timings.push({
+      stage,
+      model,
+      ms: Date.now() - t0,
+      in: resp.usage.input_tokens,
+      out: resp.usage.output_tokens,
+      cache_read: resp.usage.cache_read_input_tokens ?? 0,
+      cache_write: resp.usage.cache_creation_input_tokens ?? 0,
+    });
+  };
   let nudgedBundle = false;
   let askEscalated = false;
   let conclusiveRegen = false;
@@ -777,6 +802,7 @@ export async function runTurn(
       .filter((t) => t && !t.startsWith("[system]"))
       .join("\n---\n");
     try {
+      const tJudge = Date.now();
       const resp = await judge.complete({
         model: "claude-haiku-4-5",
         max_tokens: 8,
@@ -794,6 +820,7 @@ export async function runTurn(
         ],
         thinking: { type: "disabled" },
       });
+      record("question-judge", "claude-haiku-4-5", tJudge, resp);
       usd += estimateUsd("claude-haiku-4-5", resp.usage);
       return !/REDUNDANT/i.test(textOf(resp));
     } catch {
@@ -876,6 +903,7 @@ export async function runTurn(
     const msgs = transcript.map((m, i) =>
       i === transcript.length - 1 ? { ...m, content: withCache(m.content) } : m,
     );
+    const t0 = Date.now();
     const resp = await client.complete({
       model,
       max_tokens: maxTokens,
@@ -888,6 +916,7 @@ export async function runTurn(
       thinking: { type: "disabled" },
       ...(forced ? { tool_choice: { type: "tool", name: forced } } : {}),
     });
+    record(forced ? `card:${forced}` : "interview", model, t0, resp);
     usd += estimateUsd(model, resp.usage);
     return resp;
   };
@@ -897,6 +926,7 @@ export async function runTurn(
   // tool-budget fallback declared "EU001 is clearly your pathway" as chat
   // text. One escape hatch back into the forced, validated stages.
   const askOneQuestion = async (): Promise<TurnResult> => {
+    const tAsk = Date.now();
     const resp = await client.complete({
       model: models.loop,
       max_tokens: LOOP_MAX_TOKENS,
@@ -908,6 +938,7 @@ export async function runTurn(
       thinking: { type: "disabled" },
       tool_choice: { type: "none" },
     });
+    record("ask-fallback", models.loop, tAsk, resp);
     usd += estimateUsd(models.loop, resp.usage);
     const text = textOf(resp);
     transcript.push({ role: "assistant", content: resp.content as Block[] });
@@ -967,7 +998,7 @@ export async function runTurn(
     }
     const escalated = await shipQuestion(text, () => askOneQuestion());
     if (escalated) return escalated;
-    return { type: "question", text, transcript, usd };
+    return { type: "question", text, transcript, usd, timings };
   };
 
   // The verdict stage: forced strict final_answer on the stronger model, with
@@ -1037,6 +1068,7 @@ export async function runTurn(
               prompt_sha256: await promptSha256(),
             },
             usd,
+            timings,
           };
         }
         transcript.push({
@@ -1110,6 +1142,7 @@ export async function runTurn(
             prompt_sha256: await promptSha256(),
           },
           usd,
+          timings,
         };
       }
       console.log("pathway rejected:", problems.join("; ").slice(0, 300));
@@ -1371,7 +1404,7 @@ export async function runTurn(
     const escalated = await shipQuestion(text, () => askOneQuestion());
     if (escalated) return escalated;
 
-    return { type: "question", text, transcript, usd };
+    return { type: "question", text, transcript, usd, timings };
   }
 
   // Tool budget exhausted — force one real question instead of canned filler.
