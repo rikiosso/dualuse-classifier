@@ -232,6 +232,9 @@ describe("runTurn", () => {
     // second call (the verdict call) is forced to final_answer on the verdict model
     expect(client.requests[1].model).toBe("claude-sonnet-5");
     expect(JSON.stringify(client.requests[1].tool_choice)).toContain("final_answer");
+    // forced calls must never return parallel siblings — an unpaired
+    // tool_use would 400 the continuation and discard the validated verdict
+    expect(JSON.stringify(client.requests[1].tool_choice)).toContain('"disable_parallel_tool_use":true');
   });
 
   it("fails closed when the verdict cites invented text — asks instead", async () => {
@@ -476,6 +479,47 @@ describe("first-turn behaviour", () => {
     expect(result.text).toContain("country");
     // the recorded verdict stays in the transcript for the eventual pathway turn
     expect(JSON.stringify(result.transcript)).toContain("Verdict recorded.");
+  });
+
+  it("continuation dead-air is rolled back — no forced pathway without a stated destination", async () => {
+    const client = new CannedClaudeClient([
+      toolResp("final_answer", GOOD_VERDICT),
+      toolResp("final_answer", GOOD_VERDICT, "tu_2"),
+      // the continuation replies with narration instead of asking or calling
+      // license_pathway — forcing the card here would FABRICATE a destination
+      textResp("I will now determine the licensing pathway."),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX_GEA,
+      [{ role: "user", content: "193nm litho stepper, MRF 38nm, chuck overlay 1.2nm" }],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("verdict"); // ships clean, never a fabricated pathway
+    expect(result.continueLicensing).toBe(true); // the page follows up through the gated flow
+    expect(JSON.stringify(result.transcript)).not.toContain("determine the licensing pathway."); // rolled back
+  });
+
+  it("an opted-out user can never receive a pathway, whatever escalation fires", async () => {
+    const client = new CannedClaudeClient([
+      toolResp("license_pathway", GOOD_PATHWAY, "tu_p"), // model tries stage 2 anyway
+      textResp("Is there anything else you would like to know about the classification?"),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX_GEA,
+      [
+        { role: "user", content: "my listed 3B501 item. Just the classification please — no licence needed." },
+        ...VERDICT_EXCHANGE,
+        { role: "assistant", content: "Anything else?" },
+        { role: "user", content: "what does the entry cover exactly" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("question"); // the chokepoint bounced it
+    expect(result.pathway).toBeUndefined();
   });
 
   it("with the time budget spent, the verdict ships alone flagged for a follow-up turn", async () => {
@@ -1573,10 +1617,27 @@ describe("classification-only opt-out", () => {
     ).toBe(false);
   });
 
-  it("questionAsksLicensingFacts spots destination and end-use asks", () => {
+  it("questionAsksLicensingFacts gates only unambiguous destination asks", () => {
     expect(questionAsksLicensingFacts("Which country is the destination?")).toBe(true);
-    expect(questionAsksLicensingFacts("What is the end-use of the equipment?")).toBe(true);
+    expect(questionAsksLicensingFacts("Which country will you export to?")).toBe(true);
+    // "end-use"/"exported to" appear in legitimate ITEM questions — never gated
+    expect(questionAsksLicensingFacts("What is the end-use of the equipment?")).toBe(false);
+    expect(questionAsksLicensingFacts("Is the cryptographic API exported to external applications?")).toBe(false);
     expect(questionAsksLicensingFacts("What is the light source wavelength?")).toBe(false);
+  });
+
+  it("precision: mundane licence mentions never opt out; stray mentions never opt back in", () => {
+    expect(wantsClassificationOnly(["The software is sold without a license key; activation is online."])).toBe(false);
+    expect(wantsClassificationOnly(["It's open-source, distributed without licensing fees."])).toBe(false);
+    expect(wantsClassificationOnly(["We just received this classification request from a client."])).toBe(false);
+    expect(wantsClassificationOnly(["We don't need a licensing server to run it."])).toBe(false);
+    // stray mentions after a genuine opt-out do NOT cancel it
+    expect(
+      wantsClassificationOnly([
+        "Just the classification please.",
+        "It is operated by authorized personnel with a license key.",
+      ]),
+    ).toBe(true);
   });
 
   it("after opting out, a destination question is gated and retried", async () => {

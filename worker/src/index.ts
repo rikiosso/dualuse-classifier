@@ -205,13 +205,18 @@ export async function handleRequest(
   const reserveMs = Date.now() - tReserve;
 
   // runs one turn end-to-end and builds the response envelope — shared by the
-  // buffered and streaming paths so they can never drift apart
+  // buffered and streaming paths so they can never drift apart.
+  // modelStarted: an annex outage (or any pre-model throw) must REFUND the
+  // reservation — keeping it burned the daily budget as phantom spend and an
+  // outage could lock everyone out with zero actual model cost.
+  let modelStarted = false;
   const runOnce = async (onStage?: (stage: string) => void, timeBudgetMs?: number) => {
     const tAnnex = Date.now();
     const annex = await deps.annex(env);
     const annexMs = Date.now() - tAnnex;
     const client = deps.client(env);
     const tTurn = Date.now();
+    modelStarted = true;
     const result: TurnResult = await runTurn(
       client,
       annex,
@@ -258,7 +263,7 @@ export async function handleRequest(
       return json(await runOnce(undefined, 45_000), 200, cors);
     } catch (err) {
       const f = failureReason(err);
-      if (f.refund) await recordSpend(env.BUDGET_KV, -RESERVE_USD); // no model ran
+      if (f.refund || !modelStarted) await recordSpend(env.BUDGET_KV, -RESERVE_USD);
       return json({ type: "error", reason: f.reason }, f.status, cors);
     }
   }
@@ -278,7 +283,7 @@ export async function handleRequest(
       await emit({ type: "result", data });
     } catch (err) {
       const f = failureReason(err);
-      if (f.refund) await recordSpend(env.BUDGET_KV, -RESERVE_USD); // no model ran
+      if (f.refund || !modelStarted) await recordSpend(env.BUDGET_KV, -RESERVE_USD);
       await emit({ type: "result", data: { type: "error", reason: f.reason } });
     } finally {
       await writer.close().catch(() => {});

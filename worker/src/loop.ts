@@ -588,27 +588,36 @@ export function questionOffersEqualAlternatives(candidate: string): boolean {
 
 // "Just classify it — I don't need the licence": the user may opt out of the
 // licensing stage entirely; the classification card then ships alone and
-// destination/end-use questions are blocked. A LATER message that brings
-// licensing back up (asks about a licence, authorisation, pathway or a GEA)
-// opts back in — last signal wins, and a wrong opt-out is always recoverable.
+// destination questions are blocked. PRECISION over recall: a false opt-out
+// silently amputates half the product ("license key", "without licensing
+// fees" and the like must never fire), while a missed opt-out costs nothing —
+// the model still honours rule 21 on its own. A LATER message that explicitly
+// asks about licensing opts back in; last signal wins, so a wrong call in
+// either direction is always recoverable in one message.
 const OPT_OUT_LICENSING =
-  /\b(only|just|solo|s[oó]lo|solamente)\b[^.!?\n]{0,50}\bclassif|clasificaci[oó]n\s+(solo|s[oó]lo|solamente)|\bclassif\w*[^.!?\n]{0,30}\b(only|is enough|suffices)\b|\b(no|don'?t|do not|won'?t|not)\b[^.!?\n]{0,40}\b(need|want|require|care about|interested in)\b[^.!?\n]{0,40}\b(licen[cs]\w*|authori[sz]\w*|pathway)|\bwithout\b[^.!?\n]{0,25}\b(licen[cs]\w*|licensing|authori[sz]\w*)|\bskip\b[^.!?\n]{0,30}\b(licen[cs]\w*|pathway|authori[sz]\w*)|\bsin\s+licencia\b/i;
+  /\b(only|just)\s+(the\s+)?classif|\b(only|just)\b[^.!?\n]{0,15}\b(need|want)\b[^.!?\n]{0,25}\bclassif|\ball\s+i\s+need\b[^.!?\n]{0,25}\bclassif|\bclassif\w*[^.!?\n]{0,25}\bis\s+(all\s+i\s+need|enough)\b|\b(no|don'?t|do not|not)\b[^.!?\n]{0,25}\b(need|want|require|care about|interested in)\b[^.!?\n]{0,15}\b(the|a|any)?\s*(licen[cs]e|licensing|authori[sz]\w*|pathway)\b(?!\s*(key|keys|server|fee|fees|agreement|terms|token))|\b(don'?t|do not)\s+(worry|bother)\s+about\b[^.!?\n]{0,25}\b(licen[cs]\w*|licensing|pathway|authori[sz])|\bskip\b[^.!?\n]{0,20}\b(licen[cs]\w*|licensing|pathway|authori[sz])|\b(solo|s[oó]lo|solamente)\b[^.!?\n]{0,20}\bclasificaci|clasificaci[oó]n\s+(solo|s[oó]lo|solamente)\b/i;
+
+// Re-opt-in must be an explicit licensing ASK, not a stray mention — live
+// answers legitimately contain "license key", "authorized personnel", "EU001-
+// compliant" and must not silently cancel a genuine opt-out.
+const OPT_BACK_IN =
+  /(licen[cs]\w*|licensing|authori[sz]\w*|pathway|GEA|EU00[1-8])\b[^.!?\n]{0,40}\?|\b(which|what)\b[^.!?\n]{0,30}\b(licen[cs]e|licensing|authorisation|authorization|pathway|GEA|EU00[1-8])\b|\b(do\s+)?(i|we)\s+(need|want|get|apply\s+for)\b[^.!?\n]{0,25}\b(a\s+|the\s+)?(licen[cs]e|authorisation|authorization|permit)\b/i;
 
 export function wantsClassificationOnly(userTexts: string[]): boolean {
   let only = false;
   for (const t of userTexts) {
     if (OPT_OUT_LICENSING.test(t)) only = true;
-    else if (only && /\b(licen[cs]e|licensing|authori[sz]\w*|pathway|permit|EU00[1-8])\b/i.test(t)) {
-      only = false;
-    }
+    else if (only && OPT_BACK_IN.test(t)) only = false;
   }
   return only;
 }
 
 // Questions that only serve the licensing stage — blocked once the user has
-// opted out of it (the classification itself never turns on the destination).
+// opted out of it. Deliberately narrow: "end-use"/"exported to" appear in
+// legitimate ITEM questions (decontrol notes, cryptographic APIs), so only
+// unambiguous destination asks are gated; rule 21 covers the rest.
 export function questionAsksLicensingFacts(candidate: string): boolean {
-  return /\b(destination|destin[oa]|export(ing|ed)?\s+to\b|end[- ]?use\b|end[- ]?user|recipient|consignee|(which|what)\s+country)\b/i.test(
+  return /\b(destination|destin[oa]\b|country\s+of\s+destination|(which|what)\s+country|consignee|recipient\s+country)\b/i.test(
     candidate,
   );
 }
@@ -962,7 +971,12 @@ export async function runTurn(
       // blocks that break textOf and poison the client-held transcript —
       // this pipeline's structured discipline needs plain responses
       thinking: { type: "disabled" },
-      ...(forced ? { tool_choice: { type: "tool", name: forced } } : {}),
+      // disable_parallel_tool_use: a forced response carrying TWO parallel
+      // final_answer blocks would leave an unpaired sibling tool_use and 400
+      // the continuation (or the next turn), discarding a validated verdict
+      ...(forced
+        ? { tool_choice: { type: "tool", name: forced, disable_parallel_tool_use: true } }
+        : {}),
     });
     record(forced ? `card:${forced}` : "interview", model, t0, resp);
     usd += estimateUsd(model, resp.usage);
@@ -1111,7 +1125,6 @@ export async function runTurn(
           // opted out of licensing, or the time budget is already spent (the
           // page then quietly sends the one follow-up turn instead).
           if (verdict.status === "listed" && !classifyOnly() && !outOfTime()) {
-            transcript.push(sysMsg(STAGE2_CONTINUE_NUDGE));
             const cont = await continueToPathway();
             if (cont) return cont;
           }
@@ -1190,6 +1203,19 @@ export async function runTurn(
   // Stage-2 twin of produceVerdict: forced strict license_pathway, validated,
   // one retry, fail-closed to a question.
   const producePathway = async (): Promise<TurnResult> => {
+    // single chokepoint for the opt-out: every escalation route lands here,
+    // so an opted-out user can never receive a pathway determination —
+    // whatever prose or convergence rule tried to force one
+    if (classifyOnly()) {
+      transcript.push(
+        sysMsg(
+          "[system] The user asked for the classification only — do not determine or " +
+            "discuss a licensing pathway. Answer their question or ask what else they " +
+            "need about the classification.",
+        ),
+      );
+      return askOneQuestion();
+    }
     restoreTrimmedLookups(transcript, annex);
     ensureGeaContext();
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -1263,11 +1289,17 @@ export async function runTurn(
 
   // The in-request licensing continuation: after a listed verdict records, let
   // the loop model take up to two more steps toward license_pathway — lookups
-  // execute, a genuine licensing question ships through the same gates, and
-  // conclusions/dead air escalate into the forced validated stage exactly as
-  // in the main loop. Returns null when time or steps run out; the verdict
-  // then ships alone with continueLicensing set and the page follows up.
+  // execute, a genuine licensing question ships through the same gates, and a
+  // genuine license_pathway call proceeds to the forced validated stage.
+  // Anything else — dead air, narration, conclusive prose, leaked tool syntax
+  // — is ROLLED BACK, never escalated: with zero post-verdict user input a
+  // forced pathway would have to fabricate the destination (the schema
+  // requires one), and a fabricated destination can even mask a sanctioned
+  // one. Returns null in that case (and on time/steps running out); the
+  // verdict then ships alone with continueLicensing set, and the page's
+  // follow-up turn re-enters the fully-gated stage-2 flow.
   const continueToPathway = async (): Promise<TurnResult | null> => {
+    transcript.push(sysMsg(STAGE2_CONTINUE_NUDGE));
     for (let k = 0; k < 2; k++) {
       if (outOfTime()) return null;
       const resp = await call(models.loop, LOOP_MAX_TOKENS, false);
@@ -1299,14 +1331,14 @@ export async function runTurn(
       }
       const text = textOf(resp);
       if (
+        !text ||
+        !text.includes("?") ||
         looksToolSyntaxLeak(text) ||
         looksPathwayConclusive(text) ||
-        looksVerdictConclusive(text) ||
-        !text ||
-        !text.includes("?")
+        looksVerdictConclusive(text)
       ) {
-        transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
-        return producePathway();
+        transcript.pop(); // the reply never happened — the verdict ships clean
+        return null;
       }
       const escalated = await shipQuestion(text, () => askOneQuestion());
       if (escalated) return escalated;

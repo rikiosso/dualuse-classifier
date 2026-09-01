@@ -363,8 +363,11 @@
   // BACKSTOP ONLY: normally the worker fuses the licensing stage into the
   // same request and returns one combined result. When it runs out of time it
   // ships the verdict alone with continue_licensing set — the page then sends
-  // one silent follow-up so the user still ends with the single card.
-  let autoContinued = false;
+  // one silent follow-up so the user still ends with the single card. The
+  // budget is one backstop per user-typed message (reset on each real send),
+  // so a later verdict in the same session is never stranded and the silent
+  // follow-up can never loop.
+  let autoContinues = 0;
   const AUTO_CONTINUE =
     "Proceed to the licensing pathway using the facts already provided in this " +
     "conversation. Ask only for genuinely missing facts.";
@@ -377,13 +380,28 @@
     "ask-fallback": "Preparing the next question…",
   };
 
-  async function readNdjson(resp, onProgress) {
+  // Inactivity watchdog: the worker emits a progress line at every model-call
+  // start, so healthy gaps stay well under two minutes — a longer silence
+  // means a stalled stream, and without this guard the chat would stay locked
+  // on a pending read forever.
+  const STREAM_IDLE_MS = 120000;
+
+  async function readNdjson(resp, onProgress, abortCtl) {
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
     let data = null;
     for (;;) {
-      const { done, value } = await reader.read();
+      let idleTimer;
+      const { done, value } = await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => {
+          idleTimer = setTimeout(() => {
+            if (abortCtl) abortCtl.abort();
+            reject(new Error("stream stalled"));
+          }, STREAM_IDLE_MS);
+        }),
+      ]).finally(() => clearTimeout(idleTimer));
       if (done) break;
       buf += dec.decode(value, { stream: true });
       let nl;
@@ -409,7 +427,10 @@
       showBudgetBanner("The assistant backend is not deployed yet — Browse mode works fully.", true);
       return;
     }
-    if (!silent) addBubble("user", text);
+    if (!silent) {
+      addBubble("user", text);
+      autoContinues = 0; // fresh user message → fresh backstop budget
+    }
     transcript = transcript.concat([{ role: "user", content: text }]);
     examplesEl.classList.add("hidden");
     sendBtn.disabled = true;
@@ -432,6 +453,7 @@
       if (copy) thinking.textContent = copy;
     };
     try {
+      const abortCtl = typeof AbortController === "function" ? new AbortController() : null;
       const resp = await fetch(cfg.WORKER_URL.replace(/\/$/, "") + "/api/chat", {
         method: "POST",
         headers: {
@@ -440,9 +462,11 @@
           ...(testerKey ? { "x-tester-key": testerKey } : {}),
         },
         body: JSON.stringify({ messages: transcript }),
+        ...(abortCtl ? { signal: abortCtl.signal } : {}),
       });
       const streamed = (resp.headers.get("content-type") || "").includes("application/x-ndjson");
-      const data = streamed && resp.body ? await readNdjson(resp, onProgress) : await resp.json();
+      const data =
+        streamed && resp.body ? await readNdjson(resp, onProgress, abortCtl) : await resp.json();
       thinking.remove();
       if (!data) throw new Error("empty stream");
       if (data.type === "question") {
@@ -452,8 +476,8 @@
         transcript = data.messages;
         if (data.text) addBubble("assistant", data.text);
         addVerdictCard(data.verdict);
-        if (data.continue_licensing && !autoContinued) {
-          autoContinued = true;
+        if (data.continue_licensing && autoContinues < 1) {
+          autoContinues += 1;
           sendBtn.disabled = false;
           return sendTurn(AUTO_CONTINUE, true);
         }
