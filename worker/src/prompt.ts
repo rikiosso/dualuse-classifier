@@ -126,7 +126,11 @@ Rules, in order of precedence:
 20. TRIMMED HISTORY. Older lookup outputs in this conversation may appear
    shortened with a [trimmed] marker. Re-fetch them with the lookup tools
    before relying on or quoting them — never tell the user that text was
-   truncated, trimmed or unavailable.`;
+   truncated, trimmed or unavailable.
+21. CLASSIFICATION ONLY. If the user says they only need the classification
+   and not the licensing pathway, respect it: never ask about destination,
+   end-use or end-user, and conclude with final_answer as soon as the item
+   facts decide. If they later bring licensing back up, resume rule 11.`;
 
 export async function promptSha256(): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(PROMPT_CONTRACT));

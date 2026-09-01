@@ -189,3 +189,52 @@ describe("exhausted API credit", () => {
     expect(await resp.json()).toEqual({ type: "error", reason: "daily_budget_exhausted" });
   });
 });
+
+describe("streaming (NDJSON)", () => {
+  it("streams progress lines and ends with the same envelope a buffered response carries", async () => {
+    const req = new Request("https://worker.test/api/chat", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/x-ndjson",
+        "cf-connecting-ip": "1.2.3.4",
+        origin: ORIGIN,
+      },
+      body: JSON.stringify({ messages: [{ role: "user", content: "an RF amplifier" }] }),
+    });
+    const resp = await handleRequest(req, env(), deps([question]));
+    expect(resp.status).toBe(200);
+    expect(resp.headers.get("content-type")).toBe("application/x-ndjson");
+    const lines = (await resp.text()).trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines[0]).toEqual({ type: "progress", stage: "interview" });
+    const last = lines.at(-1);
+    expect(last.type).toBe("result");
+    expect(last.data.type).toBe("question");
+    expect(last.data.text).toContain("frequency");
+  });
+
+  it("a mid-turn failure still ends the stream with an error envelope, never a broken body", async () => {
+    const broke: Deps = {
+      annex: async () => ANNEX,
+      client: () => ({
+        complete: async () => {
+          throw new Error("anthropic 500: upstream exploded");
+        },
+      }),
+    };
+    const req = new Request("https://worker.test/api/chat", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/x-ndjson",
+        "cf-connecting-ip": "1.2.3.4",
+        origin: ORIGIN,
+      },
+      body: JSON.stringify({ messages: [{ role: "user", content: "an RF amplifier" }] }),
+    });
+    const resp = await handleRequest(req, env(), broke);
+    expect(resp.status).toBe(200); // status already committed — the error rides the body
+    const lines = (await resp.text()).trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.at(-1)).toEqual({ type: "result", data: { type: "error", reason: "upstream_error" } });
+  });
+});

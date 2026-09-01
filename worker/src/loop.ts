@@ -59,6 +59,9 @@ export interface TurnResult {
   pathway?: Pathway & { corpus_version: string; corpus_sha256: string; prompt_sha256: string };
   usd: number;
   timings: StageTiming[];
+  // set on a LISTED verdict whose in-request licensing continuation could not
+  // run (time budget spent) — the page quietly sends one follow-up turn
+  continueLicensing?: boolean;
 }
 
 // Destinations whose sanctions regimes this tool must FLAG and never resolve —
@@ -583,6 +586,33 @@ export function questionOffersEqualAlternatives(candidate: string): boolean {
   return false;
 }
 
+// "Just classify it — I don't need the licence": the user may opt out of the
+// licensing stage entirely; the classification card then ships alone and
+// destination/end-use questions are blocked. A LATER message that brings
+// licensing back up (asks about a licence, authorisation, pathway or a GEA)
+// opts back in — last signal wins, and a wrong opt-out is always recoverable.
+const OPT_OUT_LICENSING =
+  /\b(only|just|solo|s[oó]lo|solamente)\b[^.!?\n]{0,50}\bclassif|clasificaci[oó]n\s+(solo|s[oó]lo|solamente)|\bclassif\w*[^.!?\n]{0,30}\b(only|is enough|suffices)\b|\b(no|don'?t|do not|won'?t|not)\b[^.!?\n]{0,40}\b(need|want|require|care about|interested in)\b[^.!?\n]{0,40}\b(licen[cs]\w*|authori[sz]\w*|pathway)|\bwithout\b[^.!?\n]{0,25}\b(licen[cs]\w*|licensing|authori[sz]\w*)|\bskip\b[^.!?\n]{0,30}\b(licen[cs]\w*|pathway|authori[sz]\w*)|\bsin\s+licencia\b/i;
+
+export function wantsClassificationOnly(userTexts: string[]): boolean {
+  let only = false;
+  for (const t of userTexts) {
+    if (OPT_OUT_LICENSING.test(t)) only = true;
+    else if (only && /\b(licen[cs]e|licensing|authori[sz]\w*|pathway|permit|EU00[1-8])\b/i.test(t)) {
+      only = false;
+    }
+  }
+  return only;
+}
+
+// Questions that only serve the licensing stage — blocked once the user has
+// opted out of it (the classification itself never turns on the destination).
+export function questionAsksLicensingFacts(candidate: string): boolean {
+  return /\b(destination|destin[oa]|export(ing|ed)?\s+to\b|end[- ]?use\b|end[- ]?user|recipient|consignee|(which|what)\s+country)\b/i.test(
+    candidate,
+  );
+}
+
 function tokenSet(text: string): Set<string> {
   return new Set(
     text
@@ -655,6 +685,12 @@ const VERDICT_TOOL_NUDGE =
   "[system] Conclusions must be delivered ONLY through the final_answer tool, " +
   "never as prose. Call final_answer now with complete reasoning, exact " +
   "verbatim quotes and full caveats.";
+const STAGE2_CONTINUE_NUDGE =
+  "[system] Verdict recorded. Continue straight into the licensing stage " +
+  "(rule 11): if the destination, end-use and end-user are already stated, " +
+  "retrieve the relevant authorisations with lookup_gea and call " +
+  "license_pathway; otherwise ask the single most important licensing " +
+  "question (destination first).";
 
 function sysMsg(text: string): Msg {
   // models tend to answer instructions conversationally ("You're right — let
@@ -677,6 +713,14 @@ export async function runTurn(
   models: Models,
   maxUserTurns: number,
   judge?: ClaudeClient,
+  // fires at the START of every model call — the streaming handler forwards
+  // these as live progress lines so the page never shows a dead wait
+  onStage?: (stage: string) => void,
+  // elapsed-time ceiling for optional second attempts and the in-request
+  // licensing continuation. Buffered responses keep 45s (the edge cancels
+  // around 100s time-to-first-byte); a streaming response sends bytes from the
+  // first stage, so its budget can safely be double that.
+  timeBudgetMs?: number,
 ): Promise<TurnResult> {
   const transcript = sanitizeMessages(incoming, maxUserTurns);
   // count REAL user turns (excludes tool_results and our "[system]" nudges)
@@ -721,11 +765,12 @@ export async function runTurn(
   // Past this elapsed budget, skip second forced attempts and fail closed
   // (the quick question turn keeps the response comfortably under the limit).
   const startedAt = Date.now();
-  const outOfTime = () => Date.now() - startedAt > 45_000;
+  const budgetMs = timeBudgetMs ?? 45_000;
+  const outOfTime = () => Date.now() - startedAt > budgetMs;
   // a 4k-token forced card alone takes ~60-80s to generate — affordable at
   // the start of a turn, fatal after slow interview pre-steps. Slow turns
   // get a tighter card budget; validation fail-closes if it truncates.
-  const cardBudget = () => (Date.now() - startedAt > 20_000 ? 2400 : VERDICT_MAX_TOKENS);
+  const cardBudget = () => (Date.now() - startedAt > budgetMs * 0.45 ? 2400 : VERDICT_MAX_TOKENS);
 
   // real user answers given after the recorded verdict — the stage-2
   // convergence signal, needed by the main loop AND the ask-fallback
@@ -850,6 +895,7 @@ export async function runTurn(
           .join("\n"),
       )
       .filter((t) => t && !t.startsWith("[system]"));
+  const classifyOnly = () => wantsClassificationOnly(realUserTextList());
   const answeredAssistantQuestions = (): string[] => {
     const out: string[] = [];
     for (let i = 0; i < transcript.length - 1; i++) {
@@ -880,6 +926,7 @@ export async function runTurn(
       questionEchoesStatedValue(text, userTexts) ||
       questionOffersEqualAlternatives(text) ||
       questionNearDuplicate(text, answeredAssistantQuestions()) ||
+      (classifyOnly() && questionAsksLicensingFacts(text)) ||
       !(await vetQuestion(text));
     if (!blocked) return null;
     if (!gateNudged) {
@@ -904,6 +951,7 @@ export async function runTurn(
       i === transcript.length - 1 ? { ...m, content: withCache(m.content) } : m,
     );
     const t0 = Date.now();
+    onStage?.(forced ? `card:${forced}` : "interview");
     const resp = await client.complete({
       model,
       max_tokens: maxTokens,
@@ -927,6 +975,7 @@ export async function runTurn(
   // text. One escape hatch back into the forced, validated stages.
   const askOneQuestion = async (): Promise<TurnResult> => {
     const tAsk = Date.now();
+    onStage?.("ask-fallback");
     const resp = await client.complete({
       model: models.loop,
       max_tokens: LOOP_MAX_TOKENS,
@@ -1057,6 +1106,15 @@ export async function runTurn(
             role: "user",
             content: [{ type: "tool_result", tool_use_id: vUse.id, content: "Verdict recorded." }],
           });
+          // ONE INTERVIEW, ONE CARD: a listed verdict flows straight into the
+          // licensing stage in the SAME request (rule 11) — unless the user
+          // opted out of licensing, or the time budget is already spent (the
+          // page then quietly sends the one follow-up turn instead).
+          if (verdict.status === "listed" && !classifyOnly() && !outOfTime()) {
+            transcript.push(sysMsg(STAGE2_CONTINUE_NUDGE));
+            const cont = await continueToPathway();
+            if (cont) return cont;
+          }
           return {
             type: "verdict",
             text: textOf(vResp),
@@ -1069,6 +1127,7 @@ export async function runTurn(
             },
             usd,
             timings,
+            ...(verdict.status === "listed" && !classifyOnly() ? { continueLicensing: true } : {}),
           };
         }
         transcript.push({
@@ -1102,6 +1161,32 @@ export async function runTurn(
     }
   };
 
+  // The single-card flow delivers classification and pathway together, so the
+  // pathway result re-attaches the verdict recorded earlier in this
+  // conversation. The transcript is client-held and untrusted: the recovered
+  // verdict is re-validated against the corpus before it is echoed back, and
+  // a forged one is simply dropped (the pathway card then stands alone).
+  const recordedVerdict = ():
+    | (Verdict & { corpus_version: string; corpus_sha256: string })
+    | undefined => {
+    const at = lastFinalAnswerIndex(transcript);
+    if (at < 0) return undefined;
+    const use = (transcript[at].content as Block[]).find(
+      (b) => b.type === "tool_use" && b.name === "final_answer",
+    );
+    if (!use) return undefined;
+    const v = {
+      status: "needs_expert",
+      entry_codes: [],
+      reasoning: [],
+      caveats: [],
+      definitions_used: [],
+      ...(use.input as Partial<Verdict>),
+    } as Verdict;
+    if (validateVerdict(v, annex).length > 0) return undefined;
+    return { ...v, corpus_version: annex.corpus_version, corpus_sha256: annex.sha256 };
+  };
+
   // Stage-2 twin of produceVerdict: forced strict license_pathway, validated,
   // one retry, fail-closed to a question.
   const producePathway = async (): Promise<TurnResult> => {
@@ -1131,15 +1216,18 @@ export async function runTurn(
           role: "user",
           content: [{ type: "tool_result", tool_use_id: pUse.id, content: "Pathway recorded." }],
         });
+        const sha = await promptSha256();
+        const rv = recordedVerdict();
         return {
           type: "pathway",
           text: textOf(pResp),
           transcript,
+          ...(rv ? { verdict: { ...rv, prompt_sha256: sha } } : {}),
           pathway: {
             ...pathway,
             corpus_version: annex.corpus_version,
             corpus_sha256: annex.sha256,
-            prompt_sha256: await promptSha256(),
+            prompt_sha256: sha,
           },
           usd,
           timings,
@@ -1171,6 +1259,60 @@ export async function runTurn(
       ],
     });
     return askOneQuestion();
+  };
+
+  // The in-request licensing continuation: after a listed verdict records, let
+  // the loop model take up to two more steps toward license_pathway — lookups
+  // execute, a genuine licensing question ships through the same gates, and
+  // conclusions/dead air escalate into the forced validated stage exactly as
+  // in the main loop. Returns null when time or steps run out; the verdict
+  // then ships alone with continueLicensing set and the page follows up.
+  const continueToPathway = async (): Promise<TurnResult | null> => {
+    for (let k = 0; k < 2; k++) {
+      if (outOfTime()) return null;
+      const resp = await call(models.loop, LOOP_MAX_TOKENS, false);
+      const uses = toolUses(resp);
+      const pathwayCall = uses.find((u) => u.name === "license_pathway");
+      transcript.push({ role: "assistant", content: resp.content as Block[] });
+      if (uses.length > 0) {
+        transcript.push({
+          role: "user",
+          // every sibling tool_use must be answered or the next API call 400s
+          content: uses.map((u) =>
+            u === pathwayCall
+              ? {
+                  type: "tool_result",
+                  tool_use_id: u.id,
+                  content:
+                    "Draft received. Now produce the authoritative licensing pathway by calling " +
+                    "license_pathway with exact verbatim quotes from lookup_gea and full caveats.",
+                }
+              : {
+                  type: "tool_result",
+                  tool_use_id: u.id,
+                  content: execLookup(annex, String(u.name), (u.input ?? {}) as Record<string, unknown>),
+                },
+          ),
+        });
+        if (pathwayCall) return producePathway();
+        continue; // lookups only — one more step
+      }
+      const text = textOf(resp);
+      if (
+        looksToolSyntaxLeak(text) ||
+        looksPathwayConclusive(text) ||
+        looksVerdictConclusive(text) ||
+        !text ||
+        !text.includes("?")
+      ) {
+        transcript.push(sysMsg(PATHWAY_TOOL_NUDGE));
+        return producePathway();
+      }
+      const escalated = await shipQuestion(text, () => askOneQuestion());
+      if (escalated) return escalated;
+      return { type: "question", text, transcript, usd, timings };
+    }
+    return null;
   };
 
   // One extra "decision" iteration past the lookup budget: the model is told

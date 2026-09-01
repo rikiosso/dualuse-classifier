@@ -360,13 +360,49 @@
     if (switchToBrowse) setTimeout(() => showTab("browse"), 1800);
   }
 
-  // After a LISTED verdict the licensing stage continues automatically —
-  // the user should never be re-asked for facts already given. One silent
-  // continuation per conversation; further turns are the user's.
+  // BACKSTOP ONLY: normally the worker fuses the licensing stage into the
+  // same request and returns one combined result. When it runs out of time it
+  // ships the verdict alone with continue_licensing set — the page then sends
+  // one silent follow-up so the user still ends with the single card.
   let autoContinued = false;
   const AUTO_CONTINUE =
     "Proceed to the licensing pathway using the facts already provided in this " +
     "conversation. Ask only for genuinely missing facts.";
+
+  // live progress while the worker runs its sequential model calls — each
+  // stage line replaces the thinking bubble's text
+  const PROGRESS_COPY = {
+    "card:final_answer": "Drafting the classification card — checking every quote against the corpus…",
+    "card:license_pathway": "Determining the licensing pathway…",
+    "ask-fallback": "Preparing the next question…",
+  };
+
+  async function readNdjson(resp, onProgress) {
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    let data = null;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let obj;
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (obj.type === "progress") onProgress(obj.stage);
+        else if (obj.type === "result") data = obj.data;
+      }
+    }
+    return data;
+  }
 
   async function sendTurn(text, silent) {
     if (!workerReady) {
@@ -381,17 +417,34 @@
       "thinking",
       silent ? "Determining the licensing pathway…" : "Consulting Annex I…",
     );
+    let interviewSteps = 0;
+    const onProgress = (stage) => {
+      let copy = PROGRESS_COPY[stage];
+      if (stage === "interview") {
+        interviewSteps += 1;
+        copy =
+          interviewSteps === 1
+            ? "Consulting Annex I…"
+            : interviewSteps === 2
+              ? "Reading the cited entries…"
+              : "Cross-checking notes and definitions…";
+      }
+      if (copy) thinking.textContent = copy;
+    };
     try {
       const resp = await fetch(cfg.WORKER_URL.replace(/\/$/, "") + "/api/chat", {
         method: "POST",
         headers: {
           "content-type": "application/json",
+          accept: "application/x-ndjson",
           ...(testerKey ? { "x-tester-key": testerKey } : {}),
         },
         body: JSON.stringify({ messages: transcript }),
       });
-      const data = await resp.json();
+      const streamed = (resp.headers.get("content-type") || "").includes("application/x-ndjson");
+      const data = streamed && resp.body ? await readNdjson(resp, onProgress) : await resp.json();
       thinking.remove();
+      if (!data) throw new Error("empty stream");
       if (data.type === "question") {
         transcript = data.messages;
         addBubble("assistant", data.text);
@@ -399,7 +452,7 @@
         transcript = data.messages;
         if (data.text) addBubble("assistant", data.text);
         addVerdictCard(data.verdict);
-        if (data.verdict.status === "listed" && !autoContinued) {
+        if (data.continue_licensing && !autoContinued) {
           autoContinued = true;
           sendBtn.disabled = false;
           return sendTurn(AUTO_CONTINUE, true);
@@ -407,6 +460,10 @@
       } else if (data.type === "pathway") {
         transcript = data.messages;
         if (data.text) addBubble("assistant", data.text);
+        // the fused flow delivers both halves at once — render the
+        // classification first, then the pathway merges into the same card;
+        // an already-rendered verdict card (backstop flow) is reused instead
+        if (data.verdict && !lastVerdictCard) addVerdictCard(data.verdict);
         addPathwayCard(data.pathway);
       } else {
         const reason = data.reason || "unknown";
@@ -430,6 +487,7 @@
 
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
+    if (sendBtn.disabled) return; // a turn is already in flight — Enter must not double-fire
     const text = input.value.trim();
     if (!text) return;
     input.value = "";

@@ -5,8 +5,13 @@
 
 import { loadAnnex, type AnnexDataset } from "./annexData";
 import { AnthropicClient, type ClaudeClient } from "./claudeClient";
-import { InvalidRequest, runTurn } from "./loop";
+import { InvalidRequest, runTurn, type TurnResult } from "./loop";
 import { checkBudget, recordSpend, type KVLike } from "./rateLimit";
+
+// minimal ExecutionContext shape — keeps tests free of workers-types
+export interface Ctx {
+  waitUntil(promise: Promise<unknown>): void;
+}
 
 export interface Env {
   ANTHROPIC_API_KEY: string;
@@ -118,7 +123,31 @@ async function handleHealth(
   );
 }
 
-export async function handleRequest(request: Request, env: Env, deps: Deps): Promise<Response> {
+// Failure taxonomy shared by the buffered and streaming paths. A model may
+// have run before the throw — KEEP the reservation on upstream errors (refund
+// only when no model ran) so mid-loop token burn still counts against the cap.
+function failureReason(err: unknown): { reason: string; status: number; refund: boolean } {
+  if (err instanceof InvalidRequest) {
+    const reason = err.message === "conversation_too_long" ? "conversation_too_long" : "bad_request";
+    return { reason, status: 400, refund: true };
+  }
+  console.error("turn failed:", err);
+  // the workspace spend cap is the authoritative ceiling (see README) — when
+  // Anthropic refuses for exhausted credit, that IS the budget stop, and the
+  // page already shows a polite offline banner for this reason. Without the
+  // mapping every visitor sees a raw "something went wrong" instead.
+  if (err instanceof Error && /credit balance is too low/i.test(err.message)) {
+    return { reason: "daily_budget_exhausted", status: 429, refund: false };
+  }
+  return { reason: "upstream_error", status: 502, refund: false };
+}
+
+export async function handleRequest(
+  request: Request,
+  env: Env,
+  deps: Deps,
+  ctx?: Ctx,
+): Promise<Response> {
   const allowed = env.ALLOWED_ORIGINS.split(",")
     .map((s) => s.trim())
     .filter(Boolean);
@@ -175,13 +204,15 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
   await recordSpend(env.BUDGET_KV, RESERVE_USD);
   const reserveMs = Date.now() - tReserve;
 
-  try {
+  // runs one turn end-to-end and builds the response envelope — shared by the
+  // buffered and streaming paths so they can never drift apart
+  const runOnce = async (onStage?: (stage: string) => void, timeBudgetMs?: number) => {
     const tAnnex = Date.now();
     const annex = await deps.annex(env);
     const annexMs = Date.now() - tAnnex;
     const client = deps.client(env);
     const tTurn = Date.now();
-    const result = await runTurn(
+    const result: TurnResult = await runTurn(
       client,
       annex,
       messages,
@@ -191,6 +222,8 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
       },
       parseInt(env.MAX_TURNS || "10", 10),
       client, // question-gate judge: same key, cheap Haiku calls
+      onStage,
+      timeBudgetMs,
     );
     const turnMs = Date.now() - tTurn;
     await recordSpend(env.BUDGET_KV, result.usd - RESERVE_USD); // reconcile to actual
@@ -206,44 +239,64 @@ export async function handleRequest(request: Request, env: Env, deps: Deps): Pro
       stages: result.timings,
     };
     console.log("perf", JSON.stringify(perf));
-    return json(
-      {
-        type: result.type,
-        text: result.text,
-        messages: result.transcript,
-        ...(result.verdict ? { verdict: { ...result.verdict, disclaimer: FIXED_DISCLAIMER } } : {}),
-        ...(result.pathway
-          ? { pathway: { ...result.pathway, disclaimer: PATHWAY_DISCLAIMER } }
-          : {}),
-        ...(isTester ? { timings: perf } : {}),
-      },
-      200,
-      cors,
-    );
-  } catch (err) {
-    if (err instanceof InvalidRequest) {
-      // no model ran — refund the reservation
-      await recordSpend(env.BUDGET_KV, -RESERVE_USD);
-      const reason =
-        err.message === "conversation_too_long" ? "conversation_too_long" : "bad_request";
-      return json({ type: "error", reason }, 400, cors);
+    return {
+      type: result.type,
+      text: result.text,
+      messages: result.transcript,
+      ...(result.verdict ? { verdict: { ...result.verdict, disclaimer: FIXED_DISCLAIMER } } : {}),
+      ...(result.pathway
+        ? { pathway: { ...result.pathway, disclaimer: PATHWAY_DISCLAIMER } }
+        : {}),
+      ...(result.continueLicensing ? { continue_licensing: true } : {}),
+      ...(isTester ? { timings: perf } : {}),
+    };
+  };
+
+  const wantsStream = (request.headers.get("accept") ?? "").includes("application/x-ndjson");
+  if (!wantsStream) {
+    try {
+      return json(await runOnce(undefined, 45_000), 200, cors);
+    } catch (err) {
+      const f = failureReason(err);
+      if (f.refund) await recordSpend(env.BUDGET_KV, -RESERVE_USD); // no model ran
+      return json({ type: "error", reason: f.reason }, f.status, cors);
     }
-    // a model may have run before the throw — KEEP the reservation (never refund
-    // on an upstream error) so mid-loop token burn still counts against the cap
-    console.error("turn failed:", err);
-    // the workspace spend cap is the authoritative ceiling (see README) — when
-    // Anthropic refuses for exhausted credit, that IS the budget stop, and the
-    // page already shows a polite offline banner for this reason. Without the
-    // mapping every visitor sees a raw "something went wrong" instead.
-    if (err instanceof Error && /credit balance is too low/i.test(err.message)) {
-      return json({ type: "error", reason: "daily_budget_exhausted" }, 429, cors);
-    }
-    return json({ type: "error", reason: "upstream_error" }, 502, cors);
   }
+
+  // STREAMING (NDJSON): bytes flow from the first model call — one progress
+  // line per stage — so the edge's ~100s time-to-first-byte cutoff no longer
+  // binds and the turn earns a doubled time budget. The final line carries the
+  // exact envelope a buffered response would have been, errors included.
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const enc = new TextEncoder();
+  const emit = (obj: unknown) =>
+    writer.write(enc.encode(JSON.stringify(obj) + "\n")).catch(() => {});
+  const pump = (async () => {
+    try {
+      const data = await runOnce((stage) => void emit({ type: "progress", stage }), 90_000);
+      await emit({ type: "result", data });
+    } catch (err) {
+      const f = failureReason(err);
+      if (f.refund) await recordSpend(env.BUDGET_KV, -RESERVE_USD); // no model ran
+      await emit({ type: "result", data: { type: "error", reason: f.reason } });
+    } finally {
+      await writer.close().catch(() => {});
+    }
+  })();
+  ctx?.waitUntil(pump);
+  return new Response(readable, {
+    status: 200,
+    headers: {
+      "content-type": "application/x-ndjson",
+      "x-content-type-options": "nosniff",
+      ...cors,
+    },
+  });
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    return handleRequest(request, env, REAL_DEPS);
+  async fetch(request: Request, env: Env, ctx: Ctx): Promise<Response> {
+    return handleRequest(request, env, REAL_DEPS, ctx);
   },
 };

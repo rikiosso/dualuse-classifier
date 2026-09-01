@@ -2,7 +2,14 @@
 import { describe, expect, it } from "vitest";
 import type { AnnexDataset } from "../src/annexData";
 import { CannedClaudeClient, type ClaudeResponse } from "../src/claudeClient";
-import { runTurn, sanitizeMessages, validateVerdict, InvalidRequest } from "../src/loop";
+import {
+  runTurn,
+  sanitizeMessages,
+  validateVerdict,
+  InvalidRequest,
+  wantsClassificationOnly,
+  questionAsksLicensingFacts,
+} from "../src/loop";
 import type { Verdict } from "../src/tools";
 
 const ANNEX: AnnexDataset = {
@@ -214,7 +221,7 @@ describe("runTurn", () => {
       [
         { role: "user", content: "193nm litho stepper" },
         { role: "assistant", content: "What is the MRF?" },
-        { role: "user", content: "MRF is 38 nm, chuck overlay 1.2 nm" },
+        { role: "user", content: "MRF is 38 nm, chuck overlay 1.2 nm. Just the classification please — no licence needed." },
       ],
       MODELS,
       10,
@@ -308,7 +315,7 @@ describe("verdict transcript is a valid follow-up array", () => {
       [
         { role: "user", content: "193nm litho stepper" },
         { role: "assistant", content: "What is the MRF?" },
-        { role: "user", content: "MRF is 38 nm" },
+        { role: "user", content: "MRF is 38 nm. Just the classification please — no licence needed." },
       ],
       MODELS,
       10,
@@ -344,7 +351,7 @@ describe("naked prose verdicts are escalated, never returned", () => {
       [
         { role: "user", content: "big gpu cluster" },
         { role: "assistant", content: "What is the APP?" },
-        { role: "user", content: "100000 WT, military use" },
+        { role: "user", content: "100000 WT, military use. Just the classification please — no licence needed." },
       ],
       MODELS,
       10,
@@ -375,21 +382,119 @@ describe("prompt cache TTL", () => {
   });
 });
 
+// annex with a GEA — the fused-flow tests need stage 2 to be able to validate
+const ANNEX_GEA: typeof ANNEX = {
+  ...ANNEX,
+  geas: [
+    {
+      id: "EU001",
+      title: "EU001 — A.EXPORTS",
+      verbatim_text:
+        "1. This authorisation covers exports to the United States of America.\n2. Registration with the competent authority is required within 30 days of first use.",
+    },
+  ],
+  gea_common_list: "x",
+};
+const GOOD_PATHWAY = {
+  destination: "United States",
+  eligible_gea: "EU001",
+  outcome: "gea_available",
+  conditions_quoted: [
+    {
+      gea_id: "EU001",
+      verbatim_quote: "Registration with the competent authority is required within 30 days",
+      explanation: "condition",
+    },
+  ],
+  caveats: ["Requires legal review."],
+};
+
 describe("first-turn behaviour", () => {
-  it("a FULLY SPECIFIED opening message may verdict immediately (listed)", async () => {
+  it("a FULLY SPECIFIED opening message fuses verdict AND pathway into one request", async () => {
+    const client = new CannedClaudeClient([
+      toolResp("final_answer", GOOD_VERDICT), // loop model decides to conclude
+      toolResp("final_answer", GOOD_VERDICT, "tu_2"), // forced verdict validates
+      toolResp("license_pathway", GOOD_PATHWAY, "tu_3"), // continuation drafts stage 2
+      toolResp("license_pathway", GOOD_PATHWAY, "tu_4"), // forced pathway validates
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX_GEA,
+      [
+        {
+          role: "user",
+          content:
+            "193nm litho stepper, MRF 38nm, chuck overlay 1.2nm — exporting to the United States, civil fab",
+        },
+      ],
+      MODELS,
+      10,
+    );
+    // ONE request, ONE final combined card: classification + licensing pathway
+    expect(result.type).toBe("pathway");
+    expect(result.pathway?.eligible_gea).toBe("EU001");
+    expect(result.verdict?.entry_codes).toEqual(["3B501"]); // recovered + re-validated
+    expect(client.requests).toHaveLength(4);
+  });
+
+  it("with the licensing opt-out, the same opener ships the verdict card alone", async () => {
     const client = new CannedClaudeClient([
       toolResp("final_answer", GOOD_VERDICT),
       toolResp("final_answer", GOOD_VERDICT, "tu_2"),
     ]);
     const result = await runTurn(
       client,
-      ANNEX,
+      ANNEX_GEA,
+      [
+        {
+          role: "user",
+          content: "193nm litho stepper, MRF 38nm, chuck overlay 1.2nm. Just classify it — I don't need the licence.",
+        },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("verdict");
+    expect(result.verdict?.entry_codes).toEqual(["3B501"]);
+    expect(result.continueLicensing).toBeUndefined(); // the page must NOT follow up
+  });
+
+  it("when the continuation must ask for the destination, the verdict card is withheld", async () => {
+    const client = new CannedClaudeClient([
+      toolResp("final_answer", GOOD_VERDICT),
+      toolResp("final_answer", GOOD_VERDICT, "tu_2"),
+      textResp("Which country will the equipment be exported to?"), // continuation asks
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX_GEA,
       [{ role: "user", content: "193nm litho stepper, MRF 38nm, chuck overlay 1.2nm" }],
       MODELS,
       10,
     );
-    expect(result.type).toBe("verdict"); // the scenario-2 regression
-    expect(result.verdict?.entry_codes).toEqual(["3B501"]);
+    expect(result.type).toBe("question"); // interview continues; the single card comes later
+    expect(result.text).toContain("country");
+    // the recorded verdict stays in the transcript for the eventual pathway turn
+    expect(JSON.stringify(result.transcript)).toContain("Verdict recorded.");
+  });
+
+  it("with the time budget spent, the verdict ships alone flagged for a follow-up turn", async () => {
+    const client = new CannedClaudeClient([
+      toolResp("final_answer", GOOD_VERDICT),
+      toolResp("final_answer", GOOD_VERDICT, "tu_2"),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX_GEA,
+      [{ role: "user", content: "193nm litho stepper, MRF 38nm, chuck overlay 1.2nm" }],
+      MODELS,
+      10,
+      undefined,
+      undefined,
+      -1, // already out of time — the in-request continuation must not run
+    );
+    expect(result.type).toBe("verdict");
+    expect(result.continueLicensing).toBe(true); // the page quietly sends one follow-up
   });
 
   it("needs_expert on the opening message is bounced into a real question", async () => {
@@ -1081,7 +1186,13 @@ describe("naked-verdict escalation — 'matches <code>' prose", () => {
       ),
       toolResp("final_answer", GOOD_VERDICT, "tu_m1"),
     ]);
-    const result = await runTurn(client, ANNEX, [{ role: "user", content: "my VPN appliance, AES-256" }], MODELS, 10);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [{ role: "user", content: "my VPN appliance, AES-256. Just the classification please — no licence needed." }],
+      MODELS,
+      10,
+    );
     expect(result.type).toBe("verdict");
   });
 });
@@ -1094,7 +1205,13 @@ describe("naked-verdict escalation — 'meets all criteria' prose", () => {
       ),
       toolResp("final_answer", GOOD_VERDICT, "tu_v9"),
     ]);
-    const result = await runTurn(client, ANNEX, [{ role: "user", content: "my litho scanner, all specs given" }], MODELS, 10);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [{ role: "user", content: "my litho scanner, all specs given. Just the classification please — no licence needed." }],
+      MODELS,
+      10,
+    );
     expect(result.type).toBe("verdict");
     expect(result.verdict?.entry_codes).toEqual(["3B501"]);
   });
@@ -1151,6 +1268,9 @@ describe("tool-budget decision iteration and ask-fallback escalation", () => {
     );
     expect(result.type).toBe("pathway");
     expect(result.pathway?.eligible_gea).toBe("EU001");
+    // the split flow's final response carries the recovered verdict too, so
+    // the page can render the single combined card at the end
+    expect(result.verdict?.entry_codes).toEqual(["3B501"]);
   });
 
   it("conclusive prose from the fail-closed ask is escalated into the card, never shipped", async () => {
@@ -1218,7 +1338,10 @@ describe("pre-verdict convergence", () => {
     ]);
     const turns = [];
     for (let i = 0; i < 6; i++) {
-      turns.push({ role: "user", content: `fact ${i}` });
+      turns.push({
+        role: "user",
+        content: i === 5 ? "fact 5. Just the classification please — no licence needed." : `fact ${i}`,
+      });
       if (i < 5) turns.push({ role: "assistant", content: `question ${i}?` });
     }
     const result = await runTurn(client, ANNEX, turns, MODELS, 10);
@@ -1421,12 +1544,54 @@ describe("tool-syntax leak", () => {
       [
         { role: "user", content: "my litho scanner, all specs and export facts given" },
         { role: "assistant", content: "What is the NA?" },
-        { role: "user", content: "1.35, overlay 1.2 nm" },
+        { role: "user", content: "1.35, overlay 1.2 nm. Just the classification please — no licence needed." },
       ],
       MODELS,
       10,
     );
     expect(result.type).toBe("verdict");
     expect(result.verdict?.entry_codes).toEqual(["3B501"]);
+  });
+});
+
+describe("classification-only opt-out", () => {
+  it("detects the common opt-out phrasings", () => {
+    expect(wantsClassificationOnly(["Just classify it — I don't need the licence."])).toBe(true);
+    expect(wantsClassificationOnly(["I only need the classification."])).toBe(true);
+    expect(wantsClassificationOnly(["Skip the licensing part please."])).toBe(true);
+    expect(wantsClassificationOnly(["Solo la clasificación, sin licencia."])).toBe(true);
+    expect(wantsClassificationOnly(["A drone with a 40 km link."])).toBe(false);
+    expect(wantsClassificationOnly(["Destination India, civilian use."])).toBe(false);
+  });
+
+  it("a later licensing question opts back in — last signal wins", () => {
+    expect(
+      wantsClassificationOnly([
+        "Just the classification please.",
+        "Actually, which licence would I need for India?",
+      ]),
+    ).toBe(false);
+  });
+
+  it("questionAsksLicensingFacts spots destination and end-use asks", () => {
+    expect(questionAsksLicensingFacts("Which country is the destination?")).toBe(true);
+    expect(questionAsksLicensingFacts("What is the end-use of the equipment?")).toBe(true);
+    expect(questionAsksLicensingFacts("What is the light source wavelength?")).toBe(false);
+  });
+
+  it("after opting out, a destination question is gated and retried", async () => {
+    const client = new CannedClaudeClient([
+      textResp("Which country will you export to?"), // licensing fact — blocked
+      textResp("What is the laser's operating wavelength, in nanometres?"), // retry ships
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [{ role: "user", content: "an industrial laser. Just the classification please — no licence needed." }],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("question");
+    expect(result.text).toContain("wavelength");
   });
 });
