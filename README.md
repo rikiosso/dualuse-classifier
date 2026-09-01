@@ -62,12 +62,15 @@ flowchart LR
    conclusions can only ever reach you as validated cards — prose verdicts, raw tool syntax,
    empty replies and dead-air turns are all intercepted and escalated by code. A verdict that
    fails any check is rejected and corrected or the assistant asks instead. No unverifiable
-   classification ever ships. (68 offline tests pin all of this.)
+   classification ever ships. (82 offline tests pin all of this.)
+6. The response **streams live progress** — you watch it consult Annex I, read the cited
+   entries and draft the card stage by stage, instead of staring at a spinner.
 
 ## Stage 2 — the licensing pathway
 
 A classification is only half the journey. After a **Listed** verdict, the assistant keeps
-going: it asks for the destination and end-use, retrieves the **EU General Export
+going **in the same breath**: it asks for the destination and end-use (one continuous
+interview — no separate stage to trigger), retrieves the **EU General Export
 Authorisations** (EU001–EU008, Annex II of the same Regulation — also auto-updated by the
 watcher) and determines the pathway: **GEA available** (conditions quoted verbatim),
 **individual authorisation required** (quoting the provision that rules the GEAs out), or —
@@ -78,7 +81,9 @@ ab initio draft determination that **requires review by qualified counsel** befo
 The licensing stage cannot run without a validated classification first, must sweep every
 GEA whose item scope could reach the entry (EU008 for any Category 5 Part 2 item), must
 quote conditions from the authorisation it grants, and renders into the **same card** as the
-classification — one ask, one determination.
+classification — one ask, one determination. Only need the classification? Say so
+("just classify it — I don't need the licence") and the destination questions stop; the
+classification card ships alone.
 
 ## Cost design (why a public LLM demo doesn't bankrupt anyone)
 
