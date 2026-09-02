@@ -1830,3 +1830,47 @@ describe("Technical Note citations", () => {
     expect(validateVerdict(v, ANNEX).join(" ")).toContain("not found in that provision");
   });
 });
+
+describe("quote divergence hints", () => {
+  it("rejection feedback shows where a memory-based quote diverges from the source", async () => {
+    const { quoteDivergenceHint } = await import("../src/annexData");
+    const source =
+      "including Liechtenstein, United Kingdom (without prejudice to the application of this Regulation) and the United States";
+    const quote = "including Liechtenstein, the United Kingdom and the United States";
+    const hint = quoteDivergenceHint(quote, source);
+    expect(hint).toContain("diverges after");
+    expect(hint).toContain("united kingdom (without prejudice");
+  });
+
+  it("returns nothing when the quote never anchors", async () => {
+    const { quoteDivergenceHint } = await import("../src/annexData");
+    expect(quoteDivergenceHint("completely unrelated text", "the real source")).toBe("");
+  });
+});
+
+describe("fused continuation dead-air", () => {
+  it("a fail-closed reply that asks nothing ships the verdict, never dead air", async () => {
+    const BAD_PW = {
+      ...GOOD_PATHWAY,
+      conditions_quoted: [{ gea_id: "EU001", verbatim_quote: "totally invented condition text", explanation: "x" }],
+    };
+    const client = new CannedClaudeClient([
+      toolResp("final_answer", GOOD_VERDICT), // loop decides
+      toolResp("final_answer", GOOD_VERDICT, "tu_2"), // forced verdict validates
+      toolResp("license_pathway", BAD_PW, "tu_3"), // continuation drafts stage 2
+      toolResp("license_pathway", BAD_PW, "tu_4"), // forced attempt 1 rejected
+      toolResp("license_pathway", BAD_PW, "tu_5"), // forced attempt 2 rejected → ask
+      textResp("All the necessary facts are established. Let me finalize the licensing pathway."),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX_GEA,
+      [{ role: "user", content: "193nm litho stepper, MRF 38nm, chuck overlay 1.2nm — to the United States, civil fab" }],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("verdict"); // the card ships; dead air does not
+    expect(result.verdict?.entry_codes).toEqual(["3B501"]);
+    expect(result.continueLicensing).toBe(true);
+  });
+});

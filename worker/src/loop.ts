@@ -7,7 +7,15 @@
 // by code, not prompt).
 
 import type { AnnexDataset } from "./annexData";
-import { definitionsFor, entryByCode, geaById, geaScopeText, provisionText, quoteAppearsIn } from "./annexData";
+import {
+  definitionsFor,
+  entryByCode,
+  geaById,
+  geaScopeText,
+  provisionText,
+  quoteAppearsIn,
+  quoteDivergenceHint,
+} from "./annexData";
 import type { ClaudeClient, ClaudeResponse } from "./claudeClient";
 import { buildSystemBlocks, promptSha256 } from "./prompt";
 import {
@@ -414,7 +422,7 @@ export function validatePathway(pw: Pathway, annex: AnnexDataset, verdictCodes: 
       problems.push(`condition quote for ${c.gea_id} is too short to anchor`);
     } else if (!quoteAppearsIn(c.verbatim_quote, scope)) {
       problems.push(
-        `condition quote for ${c.gea_id} not found in that authorisation's text — copy exactly from lookup_gea output`,
+        `condition quote for ${c.gea_id} not found in that authorisation's text — copy exactly from lookup_gea output${quoteDivergenceHint(c.verbatim_quote, scope)}`,
       );
     }
   }
@@ -500,7 +508,7 @@ export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
       problems.push(`verbatim_quote for ${path} is too short to anchor a citation`);
     } else if (!quoteAppearsIn(r.verbatim_quote, scope)) {
       problems.push(
-        `verbatim_quote for ${path} is not found in that provision's text — quotes must be copied exactly from lookup_entries output for the cited sub-item`,
+        `verbatim_quote for ${path} is not found in that provision's text — quotes must be copied exactly from lookup_entries output for the cited sub-item${quoteDivergenceHint(r.verbatim_quote, scope)}`,
       );
     }
   }
@@ -1152,10 +1160,12 @@ export async function runTurn(
     }
     const escalated = await shipQuestion(text, () => askOneQuestion());
     if (escalated) return escalated;
-    // after an escalation the leak check above is one-shot — scrub any raw
-    // tool syntax here (returned text AND the transcript copy) before shipping
-    if (askEscalated && looksToolSyntaxLeak(text)) {
-      const safe = stripLeakTail(text) || SAFE_FALLBACK_QUESTION;
+    // after an escalation the checks above are one-shot — scrub raw tool
+    // syntax AND dead-air (a "question" turn that asks nothing) here, in the
+    // returned text and the transcript copy, before shipping
+    if (askEscalated && (looksToolSyntaxLeak(text) || !text.includes("?"))) {
+      const stripped = looksToolSyntaxLeak(text) ? stripLeakTail(text) : text;
+      const safe = stripped.includes("?") ? stripped : SAFE_FALLBACK_QUESTION;
       transcript[transcript.length - 1] = {
         role: "assistant",
         content: [{ type: "text", text: safe }],
@@ -1229,7 +1239,12 @@ export async function runTurn(
           // page then quietly sends the one follow-up turn instead).
           if (verdict.status === "listed" && !classifyOnly() && !outOfTime()) {
             const cont = await continueToPathway();
-            if (cont) return cont;
+            // a continuation may fail-close through the forced pathway into a
+            // reply that asks NOTHING ("Let me finalize the licensing
+            // pathway.") — dead air must not ship as the turn's answer; the
+            // verdict ships instead and the page's follow-up re-enters the
+            // gated stage-2 flow
+            if (cont && !(cont.type === "question" && !cont.text.includes("?"))) return cont;
           }
           return {
             type: "verdict",

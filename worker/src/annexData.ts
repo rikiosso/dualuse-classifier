@@ -115,6 +115,44 @@ export function quoteAppearsIn(quote: string, text: string): boolean {
   return q.length > 0 && norm(text).includes(q);
 }
 
+// same normalisation as quoteAppearsIn, reusable for divergence reporting
+function normText(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[‘’‚‛′]/g, "'")
+    .replace(/[“”„‟″]/g, '"')
+    .replace(/[‐-―−]/g, "-")
+    .replace(/ /g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Where does a failed quote stop matching the source? Models fix misquotes
+// reliably when shown the divergence point — a bare "not found" leaves them
+// re-guessing from memory (live: three attempts at EU001's destination list,
+// each recalling "the United Kingdom and the United States" where the source
+// carries the Northern Ireland proviso). Returns "" when nothing anchors.
+export function quoteDivergenceHint(quote: string, text: string): string {
+  const q = normText(quote);
+  const t = normText(text);
+  if (q.length === 0 || t.length === 0) return "";
+  // longest prefix of the quote that still appears in the source
+  let lo = 0;
+  let hi = q.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (t.includes(q.slice(0, mid))) lo = mid;
+    else hi = mid - 1;
+  }
+  if (lo < 20) return ""; // nothing meaningful anchors — the generic message stands
+  const at = t.indexOf(q.slice(0, lo)) + lo;
+  const anchor = q.slice(Math.max(0, lo - 45), lo);
+  return (
+    ` — your quote diverges after "...${anchor}"; the source text actually continues: ` +
+    `"${t.slice(at, at + 160)}..."`
+  );
+}
+
 // The verbatim text of exactly one provision plus its descendants, addressed by
 // dotted path. Entry text is one line per provision, "<dotted-path> <text>", so
 // the block is the line whose first token === path, plus every line whose token
