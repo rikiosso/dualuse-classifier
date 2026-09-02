@@ -1749,3 +1749,48 @@ describe("verdict-marker authentication (HMAC)", () => {
     expect(result.type).toBe("verdict"); // the tampered verdict no longer counts
   });
 });
+
+describe("leak variants and the post-escalation scrubber", () => {
+  it("detects bracketless antml/invoke leak syntax", async () => {
+    const { looksToolSyntaxLeak } = await import("../src/loop");
+    expect(looksToolSyntaxLeak('Let me finalize.\n\nantml:invoke name="final_answer">')).toBe(true);
+    expect(looksToolSyntaxLeak('invoke name="license_pathway">')).toBe(true);
+    expect(looksToolSyntaxLeak("What is the maximum numerical aperture?")).toBe(false);
+  });
+
+  it("a leak that survives every escalation is scrubbed, never shipped raw", async () => {
+    const badVerdict = {
+      ...GOOD_VERDICT,
+      reasoning: [{ ...GOOD_VERDICT.reasoning[0], verbatim_quote: "totally invented threshold text" }],
+    };
+    const leak = 'All facts are established. Let me finalize.\n\nantml:invoke name="final_answer">';
+    const client = new CannedClaudeClient([
+      textResp('<parameter name="status">listed'), // main loop: leak → forced verdict
+      toolResp("final_answer", badVerdict, "tu_a"), // attempt 1 rejected
+      toolResp("final_answer", badVerdict, "tu_b"), // attempt 2 rejected → fail-closed ask
+      textResp(leak), // ask leaks → askEscalated → forced verdict again
+      toolResp("final_answer", badVerdict, "tu_c"), // rejected
+      toolResp("final_answer", badVerdict, "tu_d"), // rejected → fail-closed ask
+      textResp(leak), // leaks AGAIN — post-escalation path must scrub
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [
+        { role: "user", content: "my litho scanner" },
+        { role: "assistant", content: "What wavelength?" },
+        { role: "user", content: "193 nm" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("question");
+    expect(result.text).not.toContain("antml");
+    expect(result.text).not.toContain("invoke");
+    // the SHIPPED reply (last transcript message — what a follow-up turn
+    // and the UI see as the assistant's answer) must be scrubbed; earlier
+    // escalated leaks stay in opaque history the user never sees
+    expect(JSON.stringify(result.transcript.at(-1))).not.toContain("antml");
+    expect(result.text.includes("?")).toBe(true);
+  });
+});

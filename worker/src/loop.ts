@@ -718,12 +718,27 @@ function looksPathwayConclusive(text: string): boolean {
 
 // raw tool-call syntax leaking as chat text: the model wrote its invocation
 // inline (or was truncated mid-call) instead of calling the tool — a live
-// turn shipped '<parameter name="status">listed' plus half a JSON array
+// turn shipped '<parameter name="status">listed' plus half a JSON array,
+// and another shipped 'antml:invoke name="final_answer">' with the leading
+// '<' eaten, so the markers must match with or without their brackets
 export function looksToolSyntaxLeak(text: string): boolean {
-  return /<parameter\s+name=|<\/?antml|<invoke\b|"dotted_path"\s*:|"entry_codes"\s*:|"conditions_quoted"\s*:|"verbatim_quote"\s*:/.test(
+  return /<parameter\s+name=|antml|invoke\s+name=|"dotted_path"\s*:|"entry_codes"\s*:|"conditions_quoted"\s*:|"verbatim_quote"\s*:/.test(
     text,
   );
 }
+
+// Last-resort scrubber for the one bounded path that can still ship after an
+// escalation round-trip: cut everything from the first leak marker on; if no
+// real question survives, fall back to a safe generic one — raw tool syntax
+// must never reach a user's screen, whatever the model did.
+function stripLeakTail(text: string): string {
+  const m = /<parameter\s+name=|antml|invoke\s+name=/.exec(text);
+  if (!m) return text;
+  const head = text.slice(0, m.index).trim();
+  return head.includes("?") ? head : "";
+}
+const SAFE_FALLBACK_QUESTION =
+  "Which additional technical parameter or export fact should I take into account?";
 
 function looksVerdictConclusive(text: string): boolean {
   return (
@@ -1123,6 +1138,16 @@ export async function runTurn(
     }
     const escalated = await shipQuestion(text, () => askOneQuestion());
     if (escalated) return escalated;
+    // after an escalation the leak check above is one-shot — scrub any raw
+    // tool syntax here (returned text AND the transcript copy) before shipping
+    if (askEscalated && looksToolSyntaxLeak(text)) {
+      const safe = stripLeakTail(text) || SAFE_FALLBACK_QUESTION;
+      transcript[transcript.length - 1] = {
+        role: "assistant",
+        content: [{ type: "text", text: safe }],
+      };
+      return { type: "question", text: safe, transcript, usd, timings };
+    }
     return { type: "question", text, transcript, usd, timings };
   };
 
