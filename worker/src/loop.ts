@@ -473,8 +473,14 @@ export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
       problems.push(`reasoning cites nonexistent entry ${r.entry_code}`);
       continue;
     }
-    // the pinpoint path must belong to the cited entry
-    const path = (r.dotted_path || "").trim();
+    // the pinpoint path must belong to the cited entry.
+    // Technical Notes belong to their parent provision — the corpus prints
+    // them as "<path> Technical Note(s): …" lines, and models cite the path
+    // with the suffix attached. Normalise it away so the quote validates
+    // against the provision block (which includes its note lines) instead of
+    // silently falling through to whole-entry scope, which would defeat the
+    // provision-scoping this validator exists for.
+    const path = (r.dotted_path || "").trim().replace(/[\s,.]*Technical\s+Notes?\b.*$/i, "").trim();
     if (!path.toUpperCase().startsWith(r.entry_code.toUpperCase())) {
       problems.push(`dotted_path ${path} does not belong to entry ${r.entry_code}`);
       continue;
@@ -506,7 +512,11 @@ export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
   for (const r of v.reasoning) {
     const entry = entryByCode(annex, r.entry_code);
     if (!entry) continue;
-    const cited = (r.dotted_path || "").trim().toUpperCase();
+    const cited = (r.dotted_path || "")
+      .trim()
+      .replace(/[\s,.]*Technical\s+Notes?\b.*$/i, "")
+      .trim()
+      .toUpperCase();
     if (!cited) continue;
     const definedTerms: string[] = [];
     for (const line of entry.verbatim_text.split("\n")) {
@@ -560,7 +570,11 @@ export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
     for (const r of v.reasoning) {
       const entry = entryByCode(annex, r.entry_code);
       if (!entry) continue;
-      const cited = (r.dotted_path || "").trim().toUpperCase();
+      const cited = (r.dotted_path || "")
+        .trim()
+        .replace(/[\s,.]*Technical\s+Notes?\b.*$/i, "")
+        .trim()
+        .toUpperCase();
       for (const line of entry.verbatim_text.split("\n")) {
         if (!/\bN\.B\.|SEE ALSO/i.test(line)) continue;
         const linePath = (line.split(/\s+/)[0] ?? "").toUpperCase();

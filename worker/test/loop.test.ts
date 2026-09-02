@@ -28,7 +28,7 @@ const ANNEX: AnnexDataset = {
       entry_code: "3B501",
       category: "3",
       verbatim_text:
-        "3B501 Test equipment as follows:\n3B501.f.1.b.1 A light source wavelength equal to or longer than 193 nm;",
+        "3B501 Test equipment as follows:\n3B501.f.1.b.1 A light source wavelength equal to or longer than 193 nm;\n3B501.f.1.b.1 Technical Notes: The 'wavelength' is measured at the source output.",
       parameters: ["3B501.f.1.b.1 A light source wavelength equal to or longer than 193 nm;"],
       applicable_notes: [],
     },
@@ -1792,5 +1792,41 @@ describe("leak variants and the post-escalation scrubber", () => {
     // escalated leaks stay in opaque history the user never sees
     expect(JSON.stringify(result.transcript.at(-1))).not.toContain("antml");
     expect(result.text.includes("?")).toBe(true);
+  });
+});
+
+describe("Technical Note citations", () => {
+  it("a dotted_path with a 'Technical Notes' suffix validates against the parent provision", () => {
+    const v: Verdict = {
+      status: "listed",
+      entry_codes: ["3B501"],
+      reasoning: [
+        GOOD_VERDICT.reasoning[0],
+        {
+          entry_code: "3B501",
+          dotted_path: "3B501.f.1.b.1 Technical Notes",
+          verbatim_quote: "The 'wavelength' is measured at the source output.",
+          explanation: "note engaged",
+        },
+      ],
+      caveats: ["c"],
+      definitions_used: [],
+    };
+    expect(validateVerdict(v, ANNEX)).toEqual([]);
+  });
+
+  it("the suffix does not widen scope — a quote from outside the provision still fails", () => {
+    const v: Verdict = {
+      ...GOOD_VERDICT,
+      reasoning: [
+        {
+          entry_code: "3B501",
+          dotted_path: "3B501.f.1.b.1 Technical Notes",
+          verbatim_quote: "Test equipment as follows:", // real entry text, wrong provision
+          explanation: "x",
+        },
+      ],
+    };
+    expect(validateVerdict(v, ANNEX).join(" ")).toContain("not found in that provision");
   });
 });
