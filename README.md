@@ -42,8 +42,10 @@ flowchart LR
    notes and Articles 2/4/5 — never its training memory of the regulation.
 2. It narrows candidates and fetches **full verbatim entry text** through a read-only
    `lookup_entries` tool (definitions via `lookup_definitions`).
-3. It interviews you — one discriminating technical question per turn, always quoting the
-   threshold it is testing.
+3. It interviews you — one discriminating technical question per turn. The prompt asks
+   it to quote the threshold it is testing with its dotted path; the server logs whether
+   each question actually does (`question_cited` in `wrangler tail`), so the rate is
+   measured rather than promised.
 4. Claude Sonnet 5 runs the interview and writes the verdicts under a strict JSON schema.
    Every candidate question passes a **question gate** before it ships: deterministic
    detectors block questions that echo a value you already stated, offer alternatives that

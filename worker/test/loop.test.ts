@@ -9,6 +9,7 @@ import {
   InvalidRequest,
   wantsClassificationOnly,
   questionAsksLicensingFacts,
+  questionCitesProvision,
 } from "../src/loop";
 import type { Verdict } from "../src/tools";
 
@@ -1457,6 +1458,15 @@ describe("needs_expert that lists its own missing_facts (live drone case, 2026-0
     expect(result.type).toBe("verdict");
     expect(result.verdict?.status).toBe("needs_expert");
   });
+});
+
+describe("questions cite the provision they test (rule 2)", () => {
+  it("detector: an entry code or Article counts, prose alone does not", () => {
+    expect(questionCitesProvision("What is the maximum flight endurance of this drone?")).toBe(false);
+    expect(questionCitesProvision("Under 9A012.a.1.a, what is the maximum endurance?")).toBe(true);
+    expect(questionCitesProvision("Are you aware of a WMD end-use (Article 4)?")).toBe(true);
+  });
+
 });
 
 describe("pre-verdict convergence", () => {

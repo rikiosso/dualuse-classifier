@@ -696,6 +696,16 @@ export function wantsClassificationOnly(userTexts: string[]): boolean {
 // opted out of it. Deliberately narrow: "end-use"/"exported to" appear in
 // legitimate ITEM questions (decontrol notes, cryptographic APIs), so only
 // unambiguous destination asks are gated; rule 21 covers the rest.
+// Rule 2 and the README both promise that every interview question quotes
+// the threshold it is testing, with its dotted path. Live questions arrive
+// without any entry reference at all ("What is the maximum flight
+// endurance…?") — correct, but indistinguishable from a generic chatbot,
+// which is the one thing this tool must never look like. A question cites a
+// provision when it names an entry code (9A012, 3B001.f.1.b…) or an Article.
+export function questionCitesProvision(candidate: string): boolean {
+  return /\b\d[A-E]\d{3}\b|\bArticle\s+\d/i.test(candidate);
+}
+
 export function questionAsksLicensingFacts(candidate: string): boolean {
   return /\b(destination|destin[oa]\b|country\s+of\s+destination|(which|what)\s+country|consignee|recipient\s+country)\b/i.test(
     candidate,
@@ -993,6 +1003,11 @@ export async function runTurn(
   // missing, so a wrong forced conclude cannot ship.
   let gateNudged = false;
   let gateEscalated = false;
+  // MEASURED, not enforced: a retry on every uncited question would add a
+  // model call to most turns while latency is already the worst live defect.
+  // The flag lands in the perf log so the rate can be read from `wrangler
+  // tail` and the prompt tuned against real numbers instead of a hunch.
+
   const realUserTextList = (): string[] =>
     transcript
       .filter((m) => m.role === "user" && Array.isArray(m.content))
@@ -1030,6 +1045,9 @@ export async function runTurn(
     retry: () => Promise<TurnResult>,
   ): Promise<TurnResult | null> => {
     const userTexts = realUserTextList();
+    if (lastFinalAnswerIndex(transcript) < 0) {
+      console.log("question_cited", JSON.stringify({ cited: questionCitesProvision(text) }));
+    }
     const blocked =
       questionEchoesStatedValue(text, userTexts) ||
       questionOffersEqualAlternatives(text) ||

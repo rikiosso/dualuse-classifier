@@ -64,7 +64,10 @@
   for (const chip of examplesEl.querySelectorAll(".chip")) {
     chip.addEventListener("click", () => {
       input.value = chip.dataset.prompt || chip.textContent;
-      input.focus();
+      // one click runs the example — a demo that needs a second click to
+      // start loses the visitor who came to see it work
+      if (!sendBtn.disabled) form.requestSubmit();
+      else input.focus();
     });
   }
 
