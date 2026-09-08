@@ -7,15 +7,7 @@
 // by code, not prompt).
 
 import type { AnnexDataset } from "./annexData";
-import {
-  definitionsFor,
-  entryByCode,
-  geaById,
-  geaScopeText,
-  provisionText,
-  quoteAppearsIn,
-  quoteDivergenceHint,
-} from "./annexData";
+import { definitionsFor, entryByCode, geaScopeText } from "./annexData";
 import type { ClaudeClient, ClaudeResponse } from "./claudeClient";
 import { buildSystemBlocks, promptSha256 } from "./prompt";
 import {
@@ -29,23 +21,52 @@ import {
 } from "./tools";
 import { estimateUsd } from "./rateLimit";
 
+import {
+  normalizePathway,
+  validatePathway,
+  validateVerdict,
+} from "./validate";
+import {
+  questionAsksLicensingFacts,
+  questionCitesProvision,
+  questionEchoesStatedValue,
+  questionNearDuplicate,
+  questionOffersEqualAlternatives,
+  wantsClassificationOnly,
+} from "./questionGate";
+import {
+  InvalidRequest,
+  lastFinalAnswerIndex,
+  sanitizeMessages,
+  verdictCodesIn,
+  verdictMarker,
+  verifyVerdictMarkers,
+  type Block,
+  type Msg,
+} from "./transcript";
+
+// Re-exports: the public surface of the loop module is unchanged for
+// index.ts and the test suite.
+export { InvalidRequest, sanitizeMessages, verifyVerdictMarkers } from "./transcript";
+export { normalizePathway, validatePathway, validateVerdict } from "./validate";
+export {
+  questionAsksLicensingFacts,
+  questionCitesProvision,
+  questionEchoesStatedValue,
+  questionNearDuplicate,
+  questionOffersEqualAlternatives,
+  wantsClassificationOnly,
+} from "./questionGate";
+
 const MAX_TOOL_ITERATIONS = 3;
 const LOOP_MAX_TOKENS = 900;
 const VERDICT_MAX_TOKENS = 2800;
-// Quotes shorter than this are too weak to anchor — a 3-char fragment appears
-// everywhere. Real thresholds and provisions comfortably clear it.
-const MIN_QUOTE_CHARS = 12;
-// Hard cap on client-supplied history, so a single POST's token cost is bounded
-// well under the daily budget (was 200k — a ~50k-token inflation vector).
-const MAX_HISTORY_CHARS = 80_000;
 
 export interface Models {
   loop: string;
   verdict: string;
 }
 
-type Block = { type: string; [k: string]: unknown };
-type Msg = { role: "user" | "assistant"; content: Block[] | string };
 
 // One entry per model call, in order — the sequential chain IS the latency
 // story, so every stage records its wall time and token/cache split.
@@ -72,201 +93,6 @@ export interface TurnResult {
   continueLicensing?: boolean;
 }
 
-// Destinations whose sanctions regimes this tool must FLAG and never resolve —
-// separate regulations with their own complexity; a wrong answer here is the
-// most expensive mistake the tool could make. Enforced server-side.
-const SANCTIONED_DESTINATIONS =
-  /\b(russia|russian?|rusia|russie|russland|moscow|moscú|moskau|belarus|bielorrusia|biélorussie|belarusian|minsk|iran(?:ian)?|irán|tehe?ran|teherán|north[ -]?korea|corea del norte|corée du nord|nordkorea|pyongyang|dprk|democratic people'?s republic of korea|syria|siria|syrie|syrien|damascus|crimea|crimée|donetsk|luhansk|myanmar|burma|birmania|venezuela|caracas)\b/i;
-
-export class InvalidRequest extends Error {}
-
-// The pathway stage validates against the verdict that precedes it — recover
-// the most recent final_answer's entry_codes from the transcript.
-function lastFinalAnswerIndex(msgs: Msg[]): number {
-  // only an ACCEPTED verdict counts — a rejected attempt (is_error result)
-  // or a dangling call must not unlock stage 2 on a failure artifact
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    const m = msgs[i];
-    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
-    const use = m.content.find((b) => b.type === "tool_use" && b.name === "final_answer");
-    if (!use) continue;
-    const next = msgs[i + 1];
-    const accepted =
-      next?.role === "user" &&
-      Array.isArray(next.content) &&
-      next.content.some(
-        (b) =>
-          b.type === "tool_result" &&
-          b.tool_use_id === use.id &&
-          !b.is_error &&
-          String(b.content ?? "").startsWith("Verdict recorded"),
-      );
-    if (accepted) return i;
-  }
-  return -1;
-}
-
-function verdictCodesIn(msgs: Msg[]): string[] {
-  const i = lastFinalAnswerIndex(msgs);
-  if (i < 0) return [];
-  for (const b of msgs[i].content as Block[]) {
-    if (b.type === "tool_use" && b.name === "final_answer") {
-      const codes = (b.input as { entry_codes?: unknown } | undefined)?.entry_codes;
-      return Array.isArray(codes) ? codes.map(String) : [];
-    }
-  }
-  return [];
-}
-
-// ---- verdict-marker authentication ----
-// "Verdict recorded" is the in-band acceptance marker every stage-2 gate
-// trusts (lastFinalAnswerIndex, verdictCodesIn, recordedVerdict) — and the
-// transcript that carries it is client-held. Corpus re-validation limits a
-// forgery to corpus-CONSISTENT verdicts, but consistency is not authenticity:
-// a forged marker could still suppress the EU008 sweep or make the pathway
-// response echo a verdict this server never accepted. The marker therefore
-// carries an HMAC over the accepted final_answer call, and every incoming
-// marker is verified ONCE per request — one that does not verify is rewritten
-// so no gate can see it (the verdict is treated as absent, never an error).
-async function hmacHex(key: string, data: string): Promise<string> {
-  const k = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(key),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sig = await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(data));
-  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function verdictMarker(key: string | undefined, use: Block): Promise<string> {
-  if (!key) return "Verdict recorded.";
-  const payload = `${String(use.id)}.${JSON.stringify(use.input ?? {})}`;
-  return `Verdict recorded. sig=${await hmacHex(key, payload)}`;
-}
-
-// Neutralise every unverified "Verdict recorded" marker in the incoming
-// transcript. With no key configured (tests, wrangler dev) markers pass
-// unauthenticated — production sets the VERDICT_HMAC_KEY secret. A signature
-// binds the marker to the exact final_answer call it accepted, so tampering
-// with the recorded verdict's input (e.g. its entry_codes, to dodge the EU008
-// sweep) also invalidates the marker.
-export async function verifyVerdictMarkers(msgs: Msg[], key: string | undefined): Promise<void> {
-  if (!key) return;
-  const usesById = new Map<string, Block>();
-  for (const m of msgs) {
-    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
-    for (const b of m.content) {
-      if (b.type === "tool_use" && b.name === "final_answer") usesById.set(String(b.id), b);
-    }
-  }
-  for (const m of msgs) {
-    if (m.role !== "user" || !Array.isArray(m.content)) continue;
-    for (const b of m.content) {
-      if (b.type !== "tool_result" || b.is_error) continue;
-      const content = typeof b.content === "string" ? b.content : "";
-      if (!content.startsWith("Verdict recorded")) continue;
-      const use = usesById.get(String(b.tool_use_id));
-      if (!use || content !== (await verdictMarker(key, use))) {
-        b.content =
-          "[unverified verdict marker removed — reclassify via final_answer before stage 2]";
-      }
-    }
-  }
-}
-
-// Strip anything the client should not be able to smuggle in: cache_control,
-// unknown roles, unknown block types, oversized histories.
-// Old corpus lookups dominate transcript size; the model can always re-fetch.
-// Trim tool_result contents outside the last few messages instead of failing.
-function trimOldToolResults(msgs: Msg[]): void {
-  const keepTail = 6;
-  for (let i = 0; i < Math.max(0, msgs.length - keepTail); i++) {
-    const m = msgs[i];
-    if (m.role !== "user" || !Array.isArray(m.content)) continue;
-    for (const b of m.content) {
-      if (b.type === "tool_result" && typeof b.content === "string" && b.content.length > 400) {
-        b.content = b.content.slice(0, 200) + "\n…[trimmed — call the lookup tool again if needed]";
-      }
-    }
-  }
-}
-
-export function sanitizeMessages(raw: unknown, maxUserTurns: number): Msg[] {
-  if (!Array.isArray(raw) || raw.length === 0) throw new InvalidRequest("messages required");
-  const allowedBlocks = new Set(["text", "tool_use", "tool_result"]);
-  const out: Msg[] = [];
-  let userTurns = 0;
-  for (const m of raw as Record<string, unknown>[]) {
-    if (m.role !== "user" && m.role !== "assistant") throw new InvalidRequest("bad role");
-    const content = m.content;
-    let blocks: Block[];
-    if (typeof content === "string") {
-      blocks = [{ type: "text", text: content }];
-    } else if (Array.isArray(content)) {
-      blocks = content
-        // thinking blocks (from a reasoning-enabled model turn) are dropped,
-        // not fatal — transcripts that carry them must stay continuable
-        .filter(
-          (b: Record<string, unknown>) => b?.type !== "thinking" && b?.type !== "redacted_thinking",
-        )
-        .map((b: Record<string, unknown>) => {
-          if (typeof b?.type !== "string" || !allowedBlocks.has(b.type)) {
-            throw new InvalidRequest("bad content block");
-          }
-          const { cache_control: _dropped, ...rest } = b;
-          // cache_control can also ride on blocks nested inside a tool_result's
-          // content array — the API honours those, so strip them too
-          if (Array.isArray(rest.content)) {
-            rest.content = (rest.content as unknown[]).map((n) =>
-              n && typeof n === "object"
-                ? (({ cache_control: _c, ...r }: Record<string, unknown>) => r)(
-                    n as Record<string, unknown>,
-                  )
-                : n,
-            );
-          }
-          return rest as Block;
-        });
-    } else {
-      throw new InvalidRequest("bad content");
-    }
-    if (blocks.length === 0) continue; // e.g. a thinking-only assistant turn
-    // consecutive duplicate user text messages are retry artifacts (a failed
-    // turn re-sent) — they burned the turn cap double-counting a live user's
-    // error retries. Real conversations always interleave an assistant turn.
-    const prev = out[out.length - 1];
-    const textJoin = (bs: Block[]) =>
-      bs.filter((b) => b.type === "text").map((b) => String((b as { text?: string }).text ?? "")).join("\n");
-    if (
-      m.role === "user" &&
-      prev?.role === "user" &&
-      Array.isArray(prev.content) &&
-      blocks.every((b) => b.type === "text") &&
-      (prev.content as Block[]).every((b) => b.type === "text") &&
-      textJoin(blocks) === textJoin(prev.content as Block[])
-    ) {
-      continue;
-    }
-    // server-injected [system] nudges are machinery, not user turns — they
-    // were eating the conversation cap (live: "length limit" after ~5 answers)
-    const isRealUserText = blocks.some(
-      (bl) => bl.type === "text" && !String((bl as { text?: string }).text ?? "").startsWith("[system]"),
-    );
-    if (m.role === "user" && isRealUserText) userTurns += 1;
-    out.push({ role: m.role, content: blocks });
-  }
-  if (out.length === 0 || out[0].role !== "user") {
-    throw new InvalidRequest("first message must be user");
-  }
-  if (userTurns > maxUserTurns) throw new InvalidRequest("conversation_too_long");
-  if (JSON.stringify(out).length > MAX_HISTORY_CHARS) trimOldToolResults(out);
-  if (JSON.stringify(out).length > MAX_HISTORY_CHARS) {
-    throw new InvalidRequest("conversation_too_long");
-  }
-  return out;
-}
 
 function withCache(blocks: Block[] | string, ttl?: "1h"): Block[] {
   const arr = typeof blocks === "string" ? [{ type: "text", text: blocks } as Block] : [...blocks];
@@ -320,25 +146,7 @@ function execLookup(annex: AnnexDataset, name: string, input: Record<string, unk
   return `Unknown tool ${name}.`;
 }
 
-// The verdict model sometimes garbles an intended-empty eligible_gea into
-// tool-syntax artifacts (seen live on a sanctions card — and rejection only
-// re-triggers the same glitch on retry, fail-closing a correct outcome).
-// Outside gea_available the field carries no meaning, so an id that does not
-// resolve is normalised to empty instead of rejected; gea_available keeps
-// strict validation because the card headlines the id.
-export function normalizePathway(pw: Pathway, annex: AnnexDataset): Pathway {
-  if (pw.outcome !== "gea_available" && pw.eligible_gea && !geaById(annex, pw.eligible_gea)) {
-    return { ...pw, eligible_gea: "" };
-  }
-  return pw;
-}
 
-// Every Category 5 Part 2 item sits inside EU008's subject matter — a live run
-// concluded individual_licence_required for a 5A002 item after testing only
-// EU001/EU007, with EU008 never retrieved. Enforced in code, not prompt.
-const CAT5P2 = /^(5A00[2-4]|5B002|5D002|5E002)/i;
-
-// trimOldToolResults shrinks old lookup outputs to keep long conversations
 // under the history cap, telling the model to re-fetch — but the FORCED
 // verdict/pathway stages pin tool_choice to the strict tool, so the model
 // CANNOT re-fetch there. Seen live (stage-2 EU008 run): the model told the
@@ -365,378 +173,6 @@ function restoreTrimmedLookups(msgs: Msg[], annex: AnnexDataset): void {
   }
 }
 
-// Pathway validation — same discipline as verdicts: quotes verbatim-in-scope,
-// referenced GEAs must exist, sanctioned destinations MUST carry the sanctions
-// outcome (never a green light), a GEA outcome needs quoted conditions.
-// verdictCodes (the stage-1 entry codes, when known) gates the EU008 sweep.
-export function validatePathway(pw: Pathway, annex: AnnexDataset, verdictCodes: string[] = []): string[] {
-  const problems: string[] = [];
-  if (!["gea_available", "individual_licence_required", "sanctions_review_required"].includes(String(pw.outcome))) {
-    problems.push(`outcome ${JSON.stringify(pw.outcome).slice(0, 40)} is not a valid pathway outcome`);
-  }
-  if (
-    pw.outcome === "individual_licence_required" &&
-    verdictCodes.some((c) => CAT5P2.test(c.trim())) &&
-    geaById(annex, "EU008") &&
-    !pw.conditions_quoted.some((c) => c.gea_id.trim().toUpperCase() === "EU008")
-  ) {
-    problems.push(
-      "the classified item is Category 5 Part 2 (5A002/5D002/5E002) — retrieve EU008 via lookup_gea and either conclude gea_available under it or quote the EU008 scope/exclusion text that rules it out",
-    );
-  }
-  if (pw.caveats.length === 0) problems.push("caveats must not be empty");
-  if (!pw.destination.trim()) problems.push("destination must be stated");
-  if (SANCTIONED_DESTINATIONS.test(pw.destination) && pw.outcome !== "sanctions_review_required") {
-    problems.push(
-      `destination "${pw.destination}" is under an EU sanctions regime — outcome must be sanctions_review_required`,
-    );
-  }
-  // eligible_gea is either empty or a REAL GEA id — for every outcome (a live
-  // run emitted garbage into this field under an individual_licence outcome)
-  if (pw.eligible_gea && !geaById(annex, pw.eligible_gea)) {
-    problems.push(`eligible_gea ${JSON.stringify(pw.eligible_gea).slice(0, 60)} does not exist in the corpus`);
-  }
-  if (pw.outcome === "gea_available") {
-    if (!pw.eligible_gea) problems.push("gea_available requires eligible_gea");
-    if (pw.conditions_quoted.length === 0) {
-      problems.push("gea_available requires quoted conditions");
-    } else if (
-      pw.eligible_gea &&
-      !pw.conditions_quoted.some((c) => c.gea_id.trim().toUpperCase() === pw.eligible_gea.trim().toUpperCase())
-    ) {
-      problems.push(
-        `gea_available under ${pw.eligible_gea} must quote at least one condition from ${pw.eligible_gea} itself`,
-      );
-    }
-  }
-  if (pw.outcome === "individual_licence_required" && pw.conditions_quoted.length === 0) {
-    problems.push(
-      "individual_licence_required must quote the provision that rules the GEAs out (e.g. the coverage clause or exclusion tested)",
-    );
-  }
-  for (const c of pw.conditions_quoted) {
-    const scope = geaScopeText(annex, c.gea_id);
-    if (!scope) {
-      problems.push(`conditions cite nonexistent GEA ${c.gea_id}`);
-    } else if (c.verbatim_quote.replace(/\s+/g, " ").trim().length < MIN_QUOTE_CHARS) {
-      problems.push(`condition quote for ${c.gea_id} is too short to anchor`);
-    } else if (!quoteAppearsIn(c.verbatim_quote, scope)) {
-      problems.push(
-        `condition quote for ${c.gea_id} not found in that authorisation's text — copy exactly from lookup_gea output${quoteDivergenceHint(c.verbatim_quote, scope)}`,
-      );
-    }
-  }
-  return problems;
-}
-
-// Server-side verdict validation — the NakedVerdict discipline. Returns a list
-// of problems; empty list = acceptable.
-export function validateVerdict(v: Verdict, annex: AnnexDataset): string[] {
-  const problems: string[] = [];
-  if (v.caveats.length === 0) problems.push("caveats must not be empty");
-
-  // Reasoning rows carry a met flag: met=false rows are rule-outs (an entry
-  // or cross-reference tested and found NOT to apply). A headline needs at
-  // least one SUPPORTING row, and rule-out rows are exempt from the headline
-  // requirement — the old symmetric checks (every headline backed by any row,
-  // every cited code headlined) forced a live verdict to headline "3B001,
-  // 3B501" while its own reasoning ruled 3B001 out.
-  if (!["listed", "not_listed", "needs_expert"].includes(String(v.status))) {
-    problems.push(`status ${JSON.stringify(v.status).slice(0, 40)} is not a valid verdict status`);
-  }
-  // a not-listed card is the tool's green light — it must show its work:
-  // which candidate entries were tested and why each was ruled out
-  if (v.status === "not_listed" && v.reasoning.length === 0) {
-    problems.push(
-      "a not_listed verdict must include reasoning rows (met=false) showing the candidate entries tested and ruled out",
-    );
-  }
-  const headlined = v.entry_codes.map((c) => c.toUpperCase());
-  if (v.status === "listed") {
-    if (v.entry_codes.length === 0) problems.push("listed verdict needs entry_codes");
-    if (v.reasoning.length === 0) problems.push("listed verdict needs reasoning");
-    for (const code of v.entry_codes) {
-      const backed = v.reasoning.some(
-        (r) => (r.entry_code || "").toUpperCase() === code.toUpperCase() && r.met !== false,
-      );
-      if (!backed) {
-        problems.push(
-          `entry_code ${code} is headlined but has no supporting reasoning — an entry whose rows all rule it out (met=false) must be removed from entry_codes`,
-        );
-      }
-    }
-    for (const r of v.reasoning) {
-      const code = (r.entry_code || "").toUpperCase();
-      if (r.met !== false && !headlined.includes(code)) {
-        problems.push(`reasoning cites ${code} as met but it is not in entry_codes`);
-      }
-    }
-  }
-  for (const code of v.entry_codes) {
-    if (!entryByCode(annex, code)) problems.push(`entry_code ${code} does not exist in the corpus`);
-  }
-  for (const r of v.reasoning) {
-    const entry = entryByCode(annex, r.entry_code);
-    if (!entry) {
-      problems.push(`reasoning cites nonexistent entry ${r.entry_code}`);
-      continue;
-    }
-    // the pinpoint path must belong to the cited entry.
-    // Technical Notes belong to their parent provision — the corpus prints
-    // them as "<path> Technical Note(s): …" lines, and models cite the path
-    // with the suffix attached. Normalise it away so the quote validates
-    // against the provision block (which includes its note lines) instead of
-    // silently falling through to whole-entry scope, which would defeat the
-    // provision-scoping this validator exists for.
-    const path = (r.dotted_path || "").trim().replace(/[\s,.]*Technical\s+Notes?\b.*$/i, "").trim();
-    if (!path.toUpperCase().startsWith(r.entry_code.toUpperCase())) {
-      problems.push(`dotted_path ${path} does not belong to entry ${r.entry_code}`);
-      continue;
-    }
-    // the quote must appear in the SPECIFIC provision named by dotted_path — not
-    // merely somewhere in the multi-page entry (blocks comparator/number flips
-    // laundered from a sibling clause)
-    const resolved = provisionText(entry, path);
-    if (resolved === null && /^\d[A-E]\d{3}(\.[a-z0-9]+)+$/i.test(path)) {
-      problems.push(
-        `dotted_path ${path} does not resolve to a provision of ${r.entry_code} — cite the exact sub-item as printed in lookup_entries output`,
-      );
-      continue;
-    }
-    const scope = resolved ?? entry.verbatim_text;
-    if (r.verbatim_quote.replace(/\s+/g, " ").trim().length < MIN_QUOTE_CHARS) {
-      problems.push(`verbatim_quote for ${path} is too short to anchor a citation`);
-    } else if (!quoteAppearsIn(r.verbatim_quote, scope)) {
-      problems.push(
-        `verbatim_quote for ${path} is not found in that provision's text — quotes must be copied exactly from lookup_entries output for the cited sub-item${quoteDivergenceHint(r.verbatim_quote, scope)}`,
-      );
-    }
-  }
-  // FORMULA-DEFINED TERMS (rule 18, enforced in code): where a Technical Note
-  // on the cited provision or an ancestor defines a quoted term by formula,
-  // any row quoting that term must SHOW the computation. A live first-turn
-  // verdict adopted a user-claimed 38 nm MRF that the entry's own K=0.35
-  // formula contradicts at any real numerical aperture.
-  for (const r of v.reasoning) {
-    const entry = entryByCode(annex, r.entry_code);
-    if (!entry) continue;
-    const cited = (r.dotted_path || "")
-      .trim()
-      .replace(/[\s,.]*Technical\s+Notes?\b.*$/i, "")
-      .trim()
-      .toUpperCase();
-    if (!cited) continue;
-    const definedTerms: string[] = [];
-    for (const line of entry.verbatim_text.split("\n")) {
-      if (!/technical note/i.test(line) || !/formula/i.test(line)) continue;
-      const linePath = (line.split(/\s+/)[0] ?? "").toUpperCase();
-      if (!linePath.includes(".")) continue;
-      if (!(cited === linePath || cited.startsWith(linePath + "."))) continue;
-      for (const m of line.matchAll(/['‘]([^'’]{2,60})['’]/g)) definedTerms.push(m[1]);
-    }
-    if (!definedTerms.some((t) => (r.verbatim_quote || "").includes(t))) continue;
-    const expl = r.explanation || "";
-    if (!(/formula|calculat/i.test(expl) && /=/.test(expl))) {
-      problems.push(
-        `${r.dotted_path} turns on a formula-defined term (see its Technical Note) — compute the value from the underlying parameters with the entry's own formula and constants, showing the calculation (e.g. 'MRF = (wavelength × K)/NA = …') in the explanation. Never adopt a user-claimed value for a defined term; if an input such as the numerical aperture is missing, do not conclude — ask the user for it`,
-      );
-      continue;
-    }
-    // arithmetic consistency: a shown computation must AGREE with the claim —
-    // a live verdict computed 50,04 nm and declared it "at or below" a 45 nm
-    // threshold. Narrow, safe direction only: a supporting row whose computed
-    // value EXCEEDS an "…or less" threshold is a false conclusion. (European
-    // decimal commas normalised; the last "= N nm" is the final result.)
-    if (r.met !== false) {
-      const calcs = [...expl.matchAll(/=\s*(\d+(?:[.,]\d+)?)\s*nm/gi)];
-      const thr =
-        /(\d+(?:[.,]\d+)?)\s*nm\s+or\s+less/i.exec(r.verbatim_quote || "") ??
-        /less\s+than\s+or\s+equal\s+to\s+(\d+(?:[.,]\d+)?)\s*nm/i.exec(r.verbatim_quote || "");
-      if (calcs.length > 0 && thr) {
-        const value = parseFloat(calcs[calcs.length - 1][1].replace(",", "."));
-        const threshold = parseFloat(thr[1].replace(",", "."));
-        if (value > threshold) {
-          problems.push(
-            `${r.dotted_path}: the computed ${value} nm EXCEEDS the ${threshold} nm-or-less threshold — this criterion is NOT met. Mark it met=false, do not headline an entry on a failed computation, and if another entry's criteria need a missing parameter (e.g. 'dedicated chuck overlay'), ask the user for it instead of concluding`,
-          );
-        }
-      }
-    }
-  }
-
-  // N.B. / SEE ALSO cross-references carried by a cited provision (or an
-  // ancestor of it) name sibling entries that catch similar equipment on
-  // different criteria (3B001.f.1 ↔ 3B501.f: the same defined term with a
-  // different K factor plus an overlay criterion). A live first-turn verdict
-  // concluded on 3B001.f.1.b without ever testing 3B501 — prompt rules did
-  // not stop it, so it is enforced here: every referenced entry must appear
-  // somewhere in the verdict (entry_codes, reasoning or caveats), even if
-  // only to say why it does not apply.
-  if (v.status !== "needs_expert") {
-    const mentioned = JSON.stringify(v).toUpperCase();
-    const flagged = new Set<string>();
-    for (const r of v.reasoning) {
-      const entry = entryByCode(annex, r.entry_code);
-      if (!entry) continue;
-      const cited = (r.dotted_path || "")
-        .trim()
-        .replace(/[\s,.]*Technical\s+Notes?\b.*$/i, "")
-        .trim()
-        .toUpperCase();
-      for (const line of entry.verbatim_text.split("\n")) {
-        if (!/\bN\.B\.|SEE ALSO/i.test(line)) continue;
-        const linePath = (line.split(/\s+/)[0] ?? "").toUpperCase();
-        // root-level N.B.s ("3B001 N.B. SEE ALSO 2B226") span a whole entry —
-        // generic context, not an obligation; requiring them taught the model
-        // to interview users about isotope separators on a litho scanner
-        if (!linePath.includes(".")) continue;
-        if (!(cited === linePath || cited.startsWith(linePath + "."))) continue;
-        for (const code of line.toUpperCase().match(/\b\d[A-E]\d{3}\b/g) ?? []) {
-          if (code === r.entry_code.toUpperCase() || flagged.has(code)) continue;
-          if (!entryByCode(annex, code)) continue;
-          if (!mentioned.includes(code)) {
-            flagged.add(code);
-            problems.push(
-              `the cited provision ${r.dotted_path} carries a cross-reference (N.B./SEE ALSO) to ${code} — either include ${code} in the verdict or state in caveats why it does not apply or cannot be assessed on the known facts`,
-            );
-          }
-        }
-      }
-    }
-  }
-  return problems;
-}
-
-// QUESTION-DEFECT DETECTORS (pure, deterministic — they run on every
-// candidate question before any judge model is consulted). Fixtures: the
-// live failures "confirm the exact numerical aperture again, e.g. 1.35 or
-// 1.350?" (echo + equal alternatives) and the five-times re-asked
-// destination question (near-duplicate).
-const UNIT_FACTORS: Record<string, number> = {
-  nm: 1, nanometre: 1, nanometres: 1, nanometer: 1, nanometers: 1,
-  um: 1000, µm: 1000, micrometre: 1000, micron: 1000, microns: 1000,
-  mm: 1e6, millimetre: 1e6, millimeter: 1e6,
-};
-
-function numberTokens(text: string): { value: number; unit: string }[] {
-  const out: { value: number; unit: string }[] = [];
-  const re = /(\d+(?:[.,]\d+)?)\s*(nm|nanometres?|nanometers?|um|µm|micrometres?|microns?|mm|millimetres?|millimeters?)?\b/gi;
-  for (const m of text.matchAll(re)) {
-    const value = parseFloat(m[1].replace(",", "."));
-    if (!Number.isFinite(value)) continue;
-    const unitRaw = (m[2] ?? "").toLowerCase();
-    const factor = UNIT_FACTORS[unitRaw];
-    out.push(factor ? { value: value * factor, unit: "nm" } : { value, unit: unitRaw || "" });
-  }
-  return out;
-}
-
-function isHedged(text: string, value: number): boolean {
-  const re = new RegExp(
-    "\\b(about|roughly|approx\\w*|around|circa|~)\\s*" + String(value).replace(".", "[.,]"),
-    "i",
-  );
-  return re.test(text);
-}
-
-// a question that echoes a number the user already stated, in the same
-// sentence as a confirm-verb, is asking for nothing
-export function questionEchoesStatedValue(candidate: string, userTexts: string[]): boolean {
-  const stated = userTexts.flatMap((t) => numberTokens(t));
-  if (stated.length === 0) return false;
-  for (const sentence of candidate.split(/(?<=[.?!])\s+/)) {
-    if (!/\b(confirm|verify|double.?check|re.?state|again)\b/i.test(sentence)) continue;
-    for (const tok of numberTokens(sentence)) {
-      const echoed = stated.some((s) => s.unit === tok.unit && Math.abs(s.value - tok.value) < 1e-9);
-      if (echoed && !userTexts.some((t) => isHedged(t, tok.value))) return true;
-    }
-  }
-  return false;
-}
-
-// "e.g. 1.35 exactly, or a more precise decimal like 1.350" — alternatives
-// that normalise to the same number ask for nothing
-export function questionOffersEqualAlternatives(candidate: string): boolean {
-  const re = /(\d+(?:[.,]\d+)?)\s*(nm|um|µm|mm)?[^.?\n\d]{0,24}\bor\b[^.?\n\d]{0,40}(\d+(?:[.,]\d+)?)\s*(nm|um|µm|mm)?/gi;
-  for (const m of candidate.matchAll(re)) {
-    const a = parseFloat(m[1].replace(",", ".")) * (UNIT_FACTORS[(m[2] ?? "").toLowerCase()] ?? 1);
-    const b = parseFloat(m[3].replace(",", ".")) * (UNIT_FACTORS[(m[4] ?? "").toLowerCase()] ?? 1);
-    if (Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 1e-9) return true;
-  }
-  return false;
-}
-
-// "Just classify it — I don't need the licence": the user may opt out of the
-// licensing stage entirely; the classification card then ships alone and
-// destination questions are blocked. PRECISION over recall: a false opt-out
-// silently amputates half the product ("license key", "without licensing
-// fees" and the like must never fire), while a missed opt-out costs nothing —
-// the model still honours rule 21 on its own. A LATER message that explicitly
-// asks about licensing opts back in; last signal wins, so a wrong call in
-// either direction is always recoverable in one message.
-const OPT_OUT_LICENSING =
-  /\b(only|just)\s+(the\s+)?classif|\b(only|just)\b[^.!?\n]{0,15}\b(need|want)\b[^.!?\n]{0,25}\bclassif|\ball\s+i\s+need\b[^.!?\n]{0,25}\bclassif|\bclassif\w*[^.!?\n]{0,25}\bis\s+(all\s+i\s+need|enough)\b|\b(no|don'?t|do not|not)\b[^.!?\n]{0,25}\b(need|want|require|care about|interested in)\b[^.!?\n]{0,15}\b(the|a|any)?\s*(licen[cs]e|licensing|authori[sz]\w*|pathway)\b(?!\s*(key|keys|server|fee|fees|agreement|terms|token))|\b(don'?t|do not)\s+(worry|bother)\s+about\b[^.!?\n]{0,25}\b(licen[cs]\w*|licensing|pathway|authori[sz])|\bskip\b[^.!?\n]{0,20}\b(licen[cs]\w*|licensing|pathway|authori[sz])|\b(solo|s[oó]lo|solamente)\b[^.!?\n]{0,20}\bclasificaci|clasificaci[oó]n\s+(solo|s[oó]lo|solamente)\b/i;
-
-// Re-opt-in must be an explicit licensing ASK, not a stray mention — live
-// answers legitimately contain "license key", "authorized personnel", "EU001-
-// compliant" and must not silently cancel a genuine opt-out.
-const OPT_BACK_IN =
-  /(licen[cs]\w*|licensing|authori[sz]\w*|pathway|GEA|EU00[1-8])\b[^.!?\n]{0,40}\?|\b(which|what)\b[^.!?\n]{0,30}\b(licen[cs]e|licensing|authorisation|authorization|pathway|GEA|EU00[1-8])\b|\b(do\s+)?(i|we)\s+(need|want|get|apply\s+for)\b[^.!?\n]{0,25}\b(a\s+|the\s+)?(licen[cs]e|authorisation|authorization|permit)\b/i;
-
-export function wantsClassificationOnly(userTexts: string[]): boolean {
-  let only = false;
-  for (const t of userTexts) {
-    if (OPT_OUT_LICENSING.test(t)) only = true;
-    else if (only && OPT_BACK_IN.test(t)) only = false;
-  }
-  return only;
-}
-
-// Questions that only serve the licensing stage — blocked once the user has
-// opted out of it. Deliberately narrow: "end-use"/"exported to" appear in
-// legitimate ITEM questions (decontrol notes, cryptographic APIs), so only
-// unambiguous destination asks are gated; rule 21 covers the rest.
-// Rule 2 and the README both promise that every interview question quotes
-// the threshold it is testing, with its dotted path. Live questions arrive
-// without any entry reference at all ("What is the maximum flight
-// endurance…?") — correct, but indistinguishable from a generic chatbot,
-// which is the one thing this tool must never look like. A question cites a
-// provision when it names an entry code (9A012, 3B001.f.1.b…) or an Article.
-export function questionCitesProvision(candidate: string): boolean {
-  return /\b\d[A-E]\d{3}\b|\bArticle\s+\d/i.test(candidate);
-}
-
-export function questionAsksLicensingFacts(candidate: string): boolean {
-  return /\b(destination|destin[oa]\b|country\s+of\s+destination|(which|what)\s+country|consignee|recipient\s+country)\b/i.test(
-    candidate,
-  );
-}
-
-function tokenSet(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .split(/\s+/)
-      .filter((w) => w.length > 2),
-  );
-}
-
-// near-duplicate of a question the user has ALREADY answered — re-asking is
-// forbidden whatever caused it (an unanswered question may be re-asked)
-export function questionNearDuplicate(candidate: string, answeredQuestions: string[]): boolean {
-  const c = tokenSet(candidate);
-  if (c.size === 0) return false;
-  for (const q of answeredQuestions) {
-    const s = tokenSet(q);
-    if (s.size === 0) continue;
-    let inter = 0;
-    for (const w of c) if (s.has(w)) inter++;
-    const union = c.size + s.size - inter;
-    if (union > 0 && inter / union >= 0.8) return true;
-  }
-  return false;
-}
 
 // Conclusive-prose detectors, shared by the main loop and the ask-fallback:
 // conclusions must reach the user ONLY as validated cards, never as chat text.
