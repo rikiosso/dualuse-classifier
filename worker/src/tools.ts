@@ -75,8 +75,19 @@ export const FINAL_ANSWER_TOOL = {
       },
       caveats: { type: "array", items: { type: "string" } },
       definitions_used: { type: "array", items: { type: "string" } },
+      missing_facts: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Facts about the item or export that the USER could still supply and that " +
+          "would decide the classification (e.g. 'wind-gust take-off capability at " +
+          "46,3 km/h', 'numerical aperture'). If this list is non-empty, do NOT call " +
+          "final_answer — ask for the first fact instead. Leave empty when every " +
+          "user-suppliable fact is known; needs_expert is then only for ambiguity " +
+          "the user cannot resolve.",
+      },
     },
-    required: ["status", "entry_codes", "reasoning", "caveats", "definitions_used"],
+    required: ["status", "entry_codes", "reasoning", "caveats", "definitions_used", "missing_facts"],
     additionalProperties: false,
   },
 } as const;
@@ -93,6 +104,7 @@ export interface Verdict {
   }[];
   caveats: string[];
   definitions_used: string[];
+  missing_facts?: string[]; // absent on legacy transcripts — treated as empty
 }
 
 export const LOOKUP_GEA_TOOL = {

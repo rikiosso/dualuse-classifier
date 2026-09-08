@@ -1374,6 +1374,91 @@ describe("needs_expert with a missing user-suppliable parameter", () => {
   });
 });
 
+describe("needs_expert that lists its own missing_facts (live drone case, 2026-09-08)", () => {
+  // Seen live: after ONE answered question (endurance = 45 min) the card
+  // shipped "NEEDS EXPERT REVIEW" because the wind-gust capability of
+  // 9A012.a.1.b "has not yet been supplied" — a yes/no fact the user could
+  // have answered. The prose regex missed it ("fact" was not in its word
+  // list). The structural missing_facts list must catch it regardless of
+  // how the model phrases the caveat.
+  it("bounces to a question about the first missing fact, whatever the prose says", async () => {
+    const stuck = {
+      status: "needs_expert",
+      entry_codes: [],
+      reasoning: [
+        {
+          entry_code: "4A003",
+          dotted_path: "4A003.b",
+          verbatim_quote: '"Digital computers" having an "Adjusted Peak Performance" ("APP") exceeding 70 Weighted TeraFLOPS (WT);',
+          explanation: "Whether the APP exceeds 70 WT depends on a rating the user has not confirmed.",
+          met: false,
+        },
+      ],
+      caveats: ["The classification depends on the APP rating; this has not yet been confirmed."],
+      definitions_used: [],
+      missing_facts: ["Adjusted Peak Performance rating in Weighted TeraFLOPS"],
+    };
+    const client = new CannedClaudeClient([
+      toolResp("final_answer", stuck), // loop draft routes to the forced verdict stage
+      toolResp("final_answer", stuck, "tu_2"), // forced attempt: contradicts its own missing_facts
+      textResp("What is the system's Adjusted Peak Performance, in Weighted TeraFLOPS?"),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [
+        { role: "user", content: "a GPU server for training models" },
+        { role: "assistant", content: "How many GPUs?" },
+        { role: "user", content: "eight" },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("question");
+    expect(result.text).toContain("Adjusted Peak Performance");
+    // the rejection names the fact the model itself listed
+    const rejection = JSON.stringify(client.requests[2].messages);
+    expect(rejection).toContain("missing_facts names it");
+    expect(rejection).toContain("Adjusted Peak Performance rating");
+  });
+
+  it("an empty missing_facts list lets a genuine needs_expert ship after real interviewing", async () => {
+    const genuine = {
+      status: "needs_expert",
+      entry_codes: [],
+      reasoning: [
+        {
+          entry_code: "4A003",
+          dotted_path: "4A003.b",
+          verbatim_quote: '"Digital computers" having an "Adjusted Peak Performance" ("APP") exceeding 70 Weighted TeraFLOPS (WT);',
+          explanation: "The vendor publishes no APP figure and the architecture is proprietary; only a measurement could settle it.",
+          met: false,
+        },
+      ],
+      caveats: ["Indicative only; Art. 4/5 catch-alls may apply."],
+      definitions_used: [],
+      missing_facts: [],
+    };
+    const client = new CannedClaudeClient([
+      toolResp("final_answer", genuine),
+      toolResp("final_answer", genuine, "tu_2"),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [
+        { role: "user", content: "a proprietary accelerator" },
+        { role: "assistant", content: "What is its APP?" },
+        { role: "user", content: "The vendor does not publish it and I cannot measure it." },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("verdict");
+    expect(result.verdict?.status).toBe("needs_expert");
+  });
+});
+
 describe("pre-verdict convergence", () => {
   it("six answered turns with no verdict force the verdict stage", async () => {
     const client = new CannedClaudeClient([

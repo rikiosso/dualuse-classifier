@@ -1194,6 +1194,7 @@ export async function runTurn(
           reasoning: [],
           caveats: [],
           definitions_used: [],
+          missing_facts: [],
           ...(vUse.input as Partial<Verdict>),
         } as Verdict;
         const problems = validateVerdict(verdict, annex);
@@ -1202,12 +1203,25 @@ export async function runTurn(
         // the verdict's own text says a user-suppliable parameter is missing —
         // a live card declared "cannot be concluded because the overlay has
         // not been provided" instead of simply asking for the overlay.
+        // STRUCTURAL check first: the schema makes the model list the facts
+        // the user could still supply. A non-empty list with needs_expert is
+        // a contradiction by definition — the verdict names its own missing
+        // question. The regex below stays only as a fallback for the prose
+        // (a live card said "this fact has not yet been supplied" and slipped
+        // past the regex because "fact" was not in its word list — pattern
+        // matching on free text can never be the primary guard).
+        const missingFacts = (verdict.missing_facts ?? []).map((f) => String(f).trim()).filter(Boolean);
         const missingParam =
           verdict.status === "needs_expert" &&
-          /\b(parameter|value|figure|overlay|aperture|endurance|wavelength|specification)\b[^.]{0,80}\bnot (yet |been )*(provided|supplied|stated|given)|\bnot (yet |been )*(provided|supplied|stated|given)\b[^.]{0,40}\b(parameter|value|figure)\b/i.test(
+          /\b(parameter|value|figure|fact|capability|overlay|aperture|endurance|wavelength|specification)\b[^.]{0,80}\bnot (yet |been )*(provided|supplied|stated|given|established|confirmed)|\bnot (yet |been )*(provided|supplied|stated|given|established|confirmed)\b[^.]{0,40}\b(parameter|value|figure|fact)\b/i.test(
             JSON.stringify(verdict),
           );
-        if (problems.length === 0 && verdict.status === "needs_expert" && (realUserTurns <= 1 || missingParam)) {
+        if (
+          problems.length === 0 &&
+          verdict.status === "needs_expert" &&
+          (realUserTurns <= 1 || missingFacts.length > 0 || missingParam)
+        ) {
+          const first = missingFacts[0];
           transcript.push({
             role: "user",
             content: [
@@ -1218,7 +1232,8 @@ export async function runTurn(
                 content:
                   "[system] needs_expert is premature when the user can still supply the " +
                   "missing fact. Ask the single most discriminating technical question " +
-                  "instead (rule 2).",
+                  "instead (rule 2)." +
+                  (first ? ` Your own missing_facts names it: ask about "${first}".` : ""),
               },
             ],
           });
@@ -1312,6 +1327,7 @@ export async function runTurn(
       reasoning: [],
       caveats: [],
       definitions_used: [],
+      missing_facts: [],
       ...(use.input as Partial<Verdict>),
     } as Verdict;
     if (validateVerdict(v, annex).length > 0) return undefined;
