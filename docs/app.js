@@ -179,7 +179,7 @@
       "Result: " + (label[v.status] || v.status) + (v.entry_codes.length ? " — " + v.entry_codes.join(", ") : ""),
     ];
     for (const r of v.reasoning || []) {
-      const tag = r.met === false ? " (tested, ruled out)" : "";
+      const tag = r.met === false ? " (not met)" : "";
       lines.push("- " + r.dotted_path + tag + ': "' + r.verbatim_quote + '" — ' + r.explanation);
     }
     for (const c of v.caveats || []) lines.push("Caveat: " + c);
@@ -213,7 +213,7 @@
       const q = document.createElement("blockquote");
       const path = document.createElement("a");
       path.className = "code";
-      path.textContent = r.dotted_path + (r.met === false ? " (tested, ruled out)" : "") + ": ";
+      path.textContent = r.dotted_path + (r.met === false ? " (not met)" : "") + ": ";
       const entryCode = (r.entry_code || "").toUpperCase();
       path.href = "#" + entryCode;
       path.title = "Open " + entryCode + " in Browse mode";

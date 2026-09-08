@@ -64,9 +64,11 @@ export const FINAL_ANSWER_TOOL = {
               type: "boolean",
               description:
                 "true if the facts SATISFY this provision and support listing under " +
-                "this entry; false for a rule-out row explaining why a tested entry " +
-                "or cross-reference does NOT apply. Ruled-out entries must not " +
-                "appear in entry_codes.",
+                "this entry; false when the facts do NOT satisfy it. A provision " +
+                "that cannot be assessed yet because a user-suppliable fact is " +
+                "missing is not a met=false row — it is an entry in missing_facts " +
+                "and a question. Entries with no met=true row must not appear in " +
+                "entry_codes.",
             },
           },
           required: ["entry_code", "dotted_path", "verbatim_quote", "explanation", "met"],
