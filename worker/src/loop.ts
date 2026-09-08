@@ -1564,6 +1564,40 @@ export async function runTurn(
     }
 
     if (finalCall) {
+      // LATENCY: the live first turn cost ~60 s because the loop model drafted
+      // needs_expert on the opening message, the forced (slow, expensive)
+      // verdict stage re-drafted the same needs_expert, and only THEN was it
+      // bounced into a question. The draft already says it cannot conclude —
+      // apply the same premature-needs_expert rule here and skip the forced
+      // stage entirely. Genuine needs_expert drafts (after real interviewing,
+      // with no user-suppliable fact missing) still go through the card stage.
+      const draft = (finalCall.input ?? {}) as Partial<Verdict>;
+      const draftMissing = (draft.missing_facts ?? []).map((f) => String(f).trim()).filter(Boolean);
+      if (draft.status === "needs_expert" && (realUserTurns <= 1 || draftMissing.length > 0)) {
+        transcript.push({ role: "assistant", content: resp.content as Block[] });
+        transcript.push({
+          role: "user",
+          content: uses.map((u) =>
+            u === finalCall
+              ? {
+                  type: "tool_result",
+                  tool_use_id: u.id,
+                  is_error: true,
+                  content:
+                    "[system] needs_expert is premature when the user can still supply the " +
+                    "missing fact. Ask the single most discriminating technical question " +
+                    "instead (rule 2)." +
+                    (draftMissing[0] ? ` Your own missing_facts names it: ask about "${draftMissing[0]}".` : ""),
+                }
+              : {
+                  type: "tool_result",
+                  tool_use_id: u.id,
+                  content: execLookup(annex, String(u.name), (u.input ?? {}) as Record<string, unknown>),
+                },
+          ),
+        });
+        return askOneQuestion();
+      }
       // The loop model decided to conclude — the verdict itself is written by
       // the stronger model under the forced strict schema.
       transcript.push({ role: "assistant", content: resp.content as Block[] });

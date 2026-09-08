@@ -552,12 +552,14 @@ describe("first-turn behaviour", () => {
     };
     const client = new CannedClaudeClient([
       toolResp("final_answer", NEEDS_EXPERT),
-      toolResp("final_answer", NEEDS_EXPERT, "tu_2"), // forced verdict call
+      // no forced verdict call any more: a needs_expert draft on the opening
+      // message is bounced straight into the question (one Sonnet call saved)
       textResp("What is the light source wavelength?"), // askOneQuestion
     ]);
     const result = await runTurn(client, ANNEX, [{ role: "user", content: "a litho machine" }], MODELS, 10);
     expect(result.type).toBe("question");
     expect(result.text).toContain("wavelength");
+    expect(client.requests).toHaveLength(2);
     // the question call must have tools disabled so it cannot stall
     expect(JSON.stringify(client.requests.at(-1)?.tool_choice)).toContain("none");
   });
@@ -1400,8 +1402,8 @@ describe("needs_expert that lists its own missing_facts (live drone case, 2026-0
       missing_facts: ["Adjusted Peak Performance rating in Weighted TeraFLOPS"],
     };
     const client = new CannedClaudeClient([
-      toolResp("final_answer", stuck), // loop draft routes to the forced verdict stage
-      toolResp("final_answer", stuck, "tu_2"), // forced attempt: contradicts its own missing_facts
+      toolResp("final_answer", GOOD_VERDICT), // loop draft believes it can conclude → forced stage
+      toolResp("final_answer", stuck, "tu_2"), // forced attempt: needs_expert contradicting its own missing_facts
       textResp("What is the system's Adjusted Peak Performance, in Weighted TeraFLOPS?"),
     ]);
     const result = await runTurn(
@@ -1467,6 +1469,45 @@ describe("questions cite the provision they test (rule 2)", () => {
     expect(questionCitesProvision("Are you aware of a WMD end-use (Article 4)?")).toBe(true);
   });
 
+});
+
+describe("first-turn latency: a needs_expert DRAFT skips the forced card stage", () => {
+  it("opening message + needs_expert draft → question after two calls, no Sonnet verdict call", async () => {
+    const draft = { status: "needs_expert", entry_codes: [], reasoning: [], caveats: [], definitions_used: [], missing_facts: ["maximum endurance"] };
+    const client = new CannedClaudeClient([
+      toolResp("final_answer", draft),
+      textResp("Under 9A012.a.1.a, what is the drone's maximum endurance?"),
+    ]);
+    const result = await runTurn(client, ANNEX, [{ role: "user", content: "a consumer drone with a 40 km link" }], MODELS, 10);
+    expect(result.type).toBe("question");
+    expect(client.requests).toHaveLength(2);
+    // the forced stage never ran: no request carried tool_choice final_answer
+    expect(client.requests.some((r) => JSON.stringify(r.tool_choice ?? {}).includes("final_answer"))).toBe(false);
+    const rejection = JSON.stringify(client.requests[1].messages);
+    expect(rejection).toContain("missing_facts names it");
+    expect(rejection).toContain("maximum endurance");
+  });
+
+  it("a needs_expert draft after real interviewing with nothing missing still reaches the card stage", async () => {
+    const draft = { status: "needs_expert", entry_codes: [], reasoning: [], caveats: ["x"], definitions_used: [], missing_facts: [] };
+    const client = new CannedClaudeClient([
+      toolResp("final_answer", draft),
+      toolResp("final_answer", { ...draft, reasoning: [{ ...GOOD_VERDICT.reasoning[0], met: false }] }, "tu_2"),
+    ]);
+    const result = await runTurn(
+      client,
+      ANNEX,
+      [
+        { role: "user", content: "a proprietary tool" },
+        { role: "assistant", content: "What is the wavelength?" },
+        { role: "user", content: "Unknown, the vendor will not say and it cannot be measured." },
+      ],
+      MODELS,
+      10,
+    );
+    expect(result.type).toBe("verdict");
+    expect(client.requests).toHaveLength(2);
+  });
 });
 
 describe("pre-verdict convergence", () => {
