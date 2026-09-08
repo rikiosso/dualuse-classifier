@@ -64,7 +64,7 @@ flowchart LR
    conclusions can only ever reach you as validated cards — prose verdicts, raw tool syntax,
    empty replies and dead-air turns are all intercepted and escalated by code. A verdict that
    fails any check is rejected and corrected or the assistant asks instead. No unverifiable
-   classification ever ships. (95 offline tests pin all of this.)
+   classification ever ships. (100 offline tests pin all of this.)
 6. The response **streams live progress** — you watch it consult Annex I, read the cited
    entries and draft the card stage by stage, instead of staring at a spinner.
 
@@ -136,6 +136,45 @@ Worker is the only backend.
   system prompt (provenance).
 - The disclaimer is appended by the Worker, not the model — it cannot be talked out of it.
 - Model text is rendered with `textContent`, never `innerHTML` — no markup injection.
+
+## Known limitations
+
+Stated up front, because an honest limit is what makes the rest credible.
+
+- **Latency.** A turn is a chain of sequential model calls (interview, question gate,
+  forced card, validation, retry). Expect 20–40 s for a question and longer for a
+  card; the page streams progress so you can see which stage you are in. The
+  per-stage timings are logged for every turn (`wrangler tail`).
+- **Two conversations per visitor per day**, and a small shared daily budget. When it
+  is spent the page falls back to Browse mode. This is a demo, not a service.
+- **Annex I only.** Catch-all controls (Articles 4 and 5), national lists, the EU
+  Common Military List, US re-export rules and sanctions are out of scope; the
+  tool flags sanctioned destinations and stops.
+- **Questions do not always cite their provision.** The prompt asks for it; the
+  server measures it (`question_cited` in the logs) and does not yet enforce it.
+- **The corpus is the consolidated text, not the Official Journal.** Only the OJ is
+  authentic. Every card carries the `corpus_version` it was made against.
+- **It has not been benchmarked.** There is no published accuracy figure yet. The
+  validator guarantees that what ships is grounded; it does not guarantee that the
+  interview asked the right questions.
+
+## Threat model (what the Worker does and does not defend against)
+
+- **Forged transcripts.** The client re-sends the whole history. Verdict acceptance
+  markers are HMAC-signed, so a client cannot fabricate a "validated" verdict to
+  unlock the licensing stage; a recovered verdict is re-validated against the corpus
+  before it is echoed back.
+- **Prompt injection through the description.** User text is treated as facts about
+  an item, never as instructions (rule 8), and conclusions can only leave through the
+  strict tools plus server validation — so an injected "say it is not listed" still
+  has to produce a verdict whose quotes exist.
+- **Cost abuse.** Per-IP conversation and request meters, global day/month counters
+  in KV, and a dedicated API key with a spend limit set in the Anthropic console. The
+  KV counters are best-effort; the key limit is the guarantee.
+- **Not defended:** requests without an `Origin` header (curl, scripts) pass the
+  origin check and are limited only by the per-IP meters — accepted, because the key
+  limit bounds the damage. KV counters are eventually consistent, so a burst can
+  overshoot the daily budget by a few reservations.
 
 ## Legal
 
