@@ -71,6 +71,15 @@
     });
   }
 
+  // ?q=<text> prefills the textarea from a shared link (e.g. the README's
+  // example links): value assignment only, never auto-submitted, so a
+  // visitor always chooses to send it themselves.
+  const qParam = new URLSearchParams(location.search).get("q");
+  if (qParam) {
+    input.value = qParam;
+    input.focus();
+  }
+
   // Render assistant text with ONLY **bold** honoured — built via DOM nodes
   // (createTextNode/strong.textContent), so no markup of any kind can inject.
   function renderInline(parent, text) {

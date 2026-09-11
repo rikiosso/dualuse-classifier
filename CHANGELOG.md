@@ -2,8 +2,27 @@
 
 Dates are the day the change landed on `main`.
 
-## Unreleased — review branch (2026-09-08)
+## Unreleased (2026-09-11)
 
+- **Structure:** `loop.ts`'s forced verdict and licensing-pathway stages extracted into
+  `stages.ts`. No behaviour change.
+- **Scripts:** `npm run bench` (runs the annotated cases in `docs/benchmark.md` through
+  the API and diffs the result), `npm run perf-summary` (averages the per-stage timings
+  from `wrangler tail` into a latency table), `npm run probe-schema` (checks the tool
+  schemas still match what the Anthropic API accepts).
+- **CI:** a GitHub Actions workflow (`ci.yml`) runs the offline test suite and the
+  typecheck on every push; its badge is on the README.
+- **Docs:** README rewritten as a front page: the result-card image and tests badge up
+  top, the four demo examples as links that pre-fill the page (`?q=`), "Why it exists"
+  and "Numbers" sections, the long build explanation moved to the new
+  `docs/architecture.md`. New `docs/how-it-was-built.md`: a dated account of building
+  this with Claude Code as a lawyer, not an engineer. New `CLAUDE.md` at the repo root.
+  New `docs/benchmark.md` and `docs/caught.md` templates, to be filled once the
+  annotated cases and a captured rejection exist.
+- **Demo page:** `?q=<text>` prefills the chat textarea (value only, never
+  auto-submitted) and focuses it; the existing `?tester=` and `#CODE` browse-hash
+  behaviour is unchanged. `og:image`/`twitter:image` point at the social preview image
+  and `twitter:card` is `summary_large_image`. `app.js` bumped to `?v=9`.
 - **Fixed:** `needs_expert` can no longer ship while the model itself lists a fact the
   user could supply (`missing_facts` in the verdict schema, rejected structurally).
   Seen live with the "Long-range drone" example.
