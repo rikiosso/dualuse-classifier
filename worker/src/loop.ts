@@ -730,6 +730,7 @@ export async function runTurn(
             ...(verdict.status === "listed" && !classifyOnly() ? { continueLicensing: true } : {}),
           };
         }
+        console.log("verdict rejected:", problems.join("; ").slice(0, 300));
         transcript.push({
           role: "user",
           content: [
