@@ -213,7 +213,8 @@ describe("streaming (NDJSON)", () => {
     expect(last.data.text).toContain("frequency");
   });
 
-  it("a mid-turn failure still ends the stream with an error envelope, never a broken body", async () => {
+  it("a mid-turn failure still ends the stream with an error envelope, never a broken body, and keeps the $0.15 reservation because modelStarted was true", async () => {
+    const kv = new FakeKV();
     const broke: Deps = {
       annex: async () => ANNEX,
       client: () => ({
@@ -232,9 +233,59 @@ describe("streaming (NDJSON)", () => {
       },
       body: JSON.stringify({ messages: [{ role: "user", content: "an RF amplifier" }] }),
     });
-    const resp = await handleRequest(req, env(), broke);
+    const resp = await handleRequest(req, env(kv), broke);
     expect(resp.status).toBe(200); // status already committed — the error rides the body
-    const lines = (await resp.text()).trim().split("\n").map((l) => JSON.parse(l));
+    // (c) the body terminates: text() resolves rather than hanging on a
+    // writer that never closes.
+    const bodyText = await resp.text();
+    const lines = bodyText.trim().split("\n").map((l) => JSON.parse(l));
+    // (a) the canned client throws on its FIRST complete() call, which the
+    // worker only reaches after onStage("interview"): loop.ts calls
+    // onStage synchronously, before the `await client.complete(...)` that
+    // throws, so the progress line is always queued on the stream ahead of
+    // the failure. Proven here rather than assumed: if the worker ever
+    // reordered this, this assertion (not lines.at(-1) alone) would catch it.
+    expect(lines[0]).toEqual({ type: "progress", stage: "interview" });
+    // (b) the stream still ends with the same error envelope a buffered
+    // response would carry.
     expect(lines.at(-1)).toEqual({ type: "result", data: { type: "error", reason: "upstream_error" } });
+    // (d) modelStarted flips true in index.ts's runOnce BEFORE runTurn (and
+    // so before this throw), so failureReason's refund=false for
+    // upstream_error must stand: the day spend key still carries the
+    // reservation, not refunded as phantom-outage spend.
+    const day = new Date().toISOString().slice(0, 10);
+    expect(kv.store.get(`spend:${day}`)).toBe("0.150000");
+  });
+
+  it("refunds the $0.15 reservation when the annex loader fails before any model call, so the day key returns to its prior value (modelStarted stays false)", async () => {
+    const kv = new FakeKV();
+    const day = new Date().toISOString().slice(0, 10);
+    kv.store.set(`spend:${day}`, "0.050000"); // prior spend from an earlier request today
+    const annexDown: Deps = {
+      annex: async () => {
+        throw new Error("annex fetch failed: 503");
+      },
+      // never reached: the annex load throws before deps.client(env) is called
+      client: () => new CannedClaudeClient([question]),
+    };
+    const req = new Request("https://worker.test/api/chat", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/x-ndjson",
+        "cf-connecting-ip": "1.2.3.4",
+        origin: ORIGIN,
+      },
+      body: JSON.stringify({ messages: [{ role: "user", content: "an RF amplifier" }] }),
+    });
+    const resp = await handleRequest(req, env(kv), annexDown);
+    const lines = (await resp.text()).trim().split("\n").map((l) => JSON.parse(l));
+    // no progress line at all: onStage is only reachable from inside runTurn,
+    // which is never invoked when the annex load itself throws.
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toEqual({ type: "result", data: { type: "error", reason: "upstream_error" } });
+    // reserved (+0.15) then refunded (-0.15) leaves the day key exactly where
+    // it was before this request, not burned for zero model cost.
+    expect(kv.store.get(`spend:${day}`)).toBe("0.050000");
   });
 });
