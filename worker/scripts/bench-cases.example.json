@@ -1,0 +1,42 @@
+{
+  "_comment": "expected values below are EXAMPLES for exercising bench.ts, not annotated ground truth. Nobody has run these through the live worker and recorded the real verdict yet — do that first (see docs/benchmark.md) before trusting any 'expected' field here. Descriptions are the page's own example chips (docs/index.html data-prompt values).",
+  "cases": [
+    {
+      "id": "example-litho",
+      "description": "A photolithography stepper with a 193 nm ArF light source for 300 mm wafers",
+      "answers": [
+        "Minimum resolvable feature size (MRF) is 38 nm.",
+        "Chuck overlay accuracy is 1.2 nm.",
+        "Exporting to the United States, for a civil semiconductor fab."
+      ],
+      "expected": {
+        "status": "listed",
+        "entry_codes": ["3B501"]
+      }
+    },
+    {
+      "id": "example-drone",
+      "description": "A consumer drone with a 40 km control link and 8 kg payload",
+      "answers": [
+        "Maximum take-off weight is 20 kg, endurance is 55 minutes.",
+        "No autonomous navigation beyond the operator's line of sight, no encrypted command link.",
+        "For sale to a hobbyist distributor in Germany."
+      ],
+      "expected": {
+        "status": "listed",
+        "entry_codes": ["9A012"]
+      }
+    },
+    {
+      "id": "example-web-software",
+      "description": "Standard e-commerce web software with TLS encryption",
+      "answers": [
+        "It's an off-the-shelf storefront package using standard TLS 1.3 over HTTPS, no custom cryptography.",
+        "It is publicly available for anyone to download, no export restrictions applied by the vendor."
+      ],
+      "expected": {
+        "status": "not_listed"
+      }
+    }
+  ]
+}

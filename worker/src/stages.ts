@@ -247,6 +247,7 @@ export async function produceVerdict(ctx: TurnContext): Promise<TurnResult> {
         ...(verdict.status === "listed" && !classifyOnly(ctx.transcript) ? { continueLicensing: true } : {}),
       };
     }
+    ctx.console.log("verdict rejected:", problems.join("; ").slice(0, 300));
     ctx.transcript.push({
       role: "user",
       content: [
