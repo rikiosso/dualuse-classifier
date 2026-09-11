@@ -62,7 +62,7 @@ flowchart LR
    conclusions can only ever reach you as validated cards — prose verdicts, raw tool syntax,
    empty replies and dead-air turns are all intercepted and escalated by code. A verdict that
    fails any check is rejected and corrected or the assistant asks instead. No unverifiable
-   classification ever ships. (82 offline tests pin all of this.)
+   classification ever ships. (95 offline tests pin all of this.)
 6. The response **streams live progress** — you watch it consult Annex I, read the cited
    entries and draft the card stage by stage, instead of staring at a spinner.
 
